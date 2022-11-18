@@ -6,6 +6,148 @@ using Unity.VisualScripting;
 using UnityEngine;
 using UnityEngine.UIElements;
 
+// Struct Representing all necessary Vertex Data to be tracked for individual
+// Vertices in the Striking operation. Saves needing many separate arrays for
+// data that should be grouped, added, altered, and removed together
+struct Vertex
+{
+    public Vector3 Position;
+    public Vector3 Normal;
+    public Vector3 Tangent;
+    public Vector2 UV;
+}
+
+// Struct Representing a single Mesh Triangle. This consists of 3 Vertices, and
+// supports Triangle operations like planar normal and intersections
+struct Triangle
+{
+    // 3 Vertices to make a triangle
+    public Vertex V0; public Vertex V1; public Vertex V2;
+
+    // Calculate the Triangle's Normal - this is DIFFERENT from each Vertex Normal,
+    // it is the Normal of the Plane the Triangle lies on
+    public Vector3 CalculateNormal()
+    {
+        Vector3 v1 = V1.Position - V0.Position;
+        Vector3 v2 = V2.Position - V0.Position; 
+        return Vector3.Cross(v1, v2).normalized; // Assumes Winding Order in Clockwise
+    }
+
+    // Performs Moller's(97) Fast Intersection Test, returning the Edge
+    // upon which the Triangles Intersect
+    // This assumes both Triangles are within the same coordinate system - 
+    // ideally pre-transformed into World Units
+    //
+    // Returns a boolean indicating whether or not there is an intersecion. In future
+    // this should ALSO return in some form the Edge and Direction (start and end point?)
+    // of the intersection, since that is necessary for constructing the intersection meshes
+    public bool Intersect(Triangle other)
+    {
+        // -- Step 1 - Compute Plane equation of Other Triangle (T2)
+        Vector3 N2 = other.CalculateNormal();
+        float d2 = Vector3.Dot(-N2, other.V0.Position);
+        Plane plane2 = new Plane(N2, d2); // Create a Unity Plane for access to functions like GetDistanceToPoint, etc.
+
+        // Distances of T1 (this) vertices to T2 Plane (other)
+        // Naming convention is d2v1i
+        //  - d - Distance to
+        //  - 2 - Triangle 2
+        //  - v1 - Vertex of Triangle 1
+        //  - i - Vertex # of Triangle 1
+        float d2v10 = plane2.GetDistanceToPoint(V0.Position);
+        float d2v11 = plane2.GetDistanceToPoint(V1.Position);
+        float d2v12 = plane2.GetDistanceToPoint(V2.Position);
+
+        // -- Step 2 - Reject as trivial if all points of This (T1) are on the same side
+        if (d2v10 != 0 && d2v11 != 0 && d2v12 != 0) // All distances are not 0 (no points on the plane)
+        {
+            float d2v10Sign = Mathf.Sign(d2v10);
+            if (d2v10Sign == Mathf.Sign(d2v11) && d2v10Sign == Mathf.Sign(d2v12)) // If all share the same sign
+            {
+                Debug.Log("All Vertices of Triangle 1 are on the same side of the Plane defined by Triangle 2");
+                return false;
+            }
+        }
+        else if (d2v10 == 0 && d2v11 == 0 && d2v12 == 0) // Distance from plane to all points is 0 - Triangles are co-planar
+        {
+            Debug.Log("Triangles are co-planar. Handle case separately");
+            return false; // Placeholder
+        }
+
+        // -- Step 3 - Compute Plane equation of This Triangle (T1)
+        Vector3 N1 = CalculateNormal();
+        float d1 = Vector3.Dot(-N1, V0.Position);
+        Plane plane1 = new Plane(N1, d1);
+
+        // Distances of T2 (other) vertices to T1 Plane (this)
+        // Naming convention is d1v2i
+        //  - d1 - Distance to Triangle 1
+        //  - v2 - Vertex of Triangle 2
+        //  - i - Vertex # of Triangle 2
+        float d1v20 = plane1.GetDistanceToPoint(other.V0.Position);
+        float d1v21 = plane1.GetDistanceToPoint(other.V1.Position);
+        float d1v22 = plane1.GetDistanceToPoint(other.V2.Position);
+
+        // -- Step 4 - Reject as trivial if all points of Other (T2) are on the same side
+        if (d1v20 != 0 && d1v21 != 0 && d1v22 != 0) // All distances are not 0 (no points on the plane)
+        {
+            float d1v20Sign = Mathf.Sign(d1v20);
+            if (d1v20Sign == Mathf.Sign(d1v21) && d1v20Sign == Mathf.Sign(d1v22)) // If all share the same sign
+            {
+                Debug.Log("All Vertices of Triangle 2 are on the same side of the Plane defined by Triangle 2");
+                return false;
+            }
+        }
+        // No need to check co-planar again - it would have been caught beforehand
+
+        // -- Step 5 - Compute intersection line and project onto largest axis - Projection onto Largest axis is not done,
+        // as I do not fully understand the notation described and how the simplification works
+        Vector3 D = Vector3.Cross(N1, N2); // D in the equation L = O + tD (O is ignored, since Translation to Origin does not affect result)
+
+        // Project Triangle 1 (this) points
+        // Naming convention is pv1i
+        //  - pv1 - Projection Vertex of Triangle 1
+        //  - i - Vertex # of Triangle 1
+        float pv10 = Vector3.Dot(D, V0.Position);
+        float pv11 = Vector3.Dot(D, V1.Position);
+        float pv12 = Vector3.Dot(D, V2.Position);
+
+        // Repeat for Triangle 2 (other) points, same convention
+        float pv20 = Vector3.Dot(D, other.V0.Position);
+        float pv21 = Vector3.Dot(D, other.V1.Position);
+        float pv22 = Vector3.Dot(D, other.V2.Position);
+
+        // -- Step 6 - Compute intervals for each Triangle
+        float t11 = (pv11 - pv10) * (d2v10 / (d2v10 - d2v11)) + pv10;
+        float t12 = (pv11 - pv12) * (d2v12 / (d2v12 - d2v11)) + pv12;
+        Vector3 t11t12 = (D * t12) - (D * t11); // Vector of t11 to t12 along L
+
+        float t21 = (pv21 - pv20) * (d1v20 / (d1v20 - d1v21)) + pv20;
+        float t22 = (pv21 - pv22) * (d1v22 / (d1v22 - d1v21)) + pv22;
+        Vector3 t21t22 = (D * t22) - (D * t21); // Vector of t21 to t22 along L
+
+        // -- Step 7 - Intersect the intervals
+        float min = t11; // Decide minimum distance along D to an end of an intersection (ignoring O)
+        if (min > t12) min = t12;
+        if (min > t21) min = t21;
+        if (min > t22) min = t22;
+        float max = t11; // Repeat for maximum distance
+        if (max < t12) max = t12;
+        if (max < t21) max = t21;
+        if (max < t22) max = t22;
+
+        Vector3 dist = (D * max) - (D * min);
+        if(dist.magnitude >= t11t12.magnitude + t21t22.magnitude)
+        {
+            Debug.Log("Distance between shortest and longest is greater than combined interval length, so they can't overlap");
+            return false;
+        }
+        Debug.Log("INTERSECTION FOUND");
+        return true;
+    }
+}
+
+// Actual Unity Script
 public class Striker : MonoBehaviour
 {
     protected MeshFilter coneMeshFilter;
@@ -77,6 +219,7 @@ public class Striker : MonoBehaviour
             coneMeshFilter.mesh = cone;
 
             //SutherlandHodgmanAlgorithm/*CullOnly*/(coreMesh, cone);
+            StrikeMesh(cone);
         }
     }
 
@@ -178,6 +321,42 @@ public class Striker : MonoBehaviour
         mesh.uv = newUVs.ToArray();
         mesh.triangles = newIndices.ToArray();
     }
+
+
+    // Performs an implementation of the Boolean Operations on Triangulated Surfaces described by
+    // Mei and Tipper (2013)
+    // The general steps (as laid out in their paper) are as follows:
+    //  1 - Take 2 Surface Mesh inputs (clipMesh and coreMesh, clipMesh MUST have been generated by GenerateCone())
+    //  2 - Search for pairs of intersecting Triangles
+    //  3 - Compute Intersection and re-triangulate
+    //  4 - Merge and Update Surface Meshes (in this case only the coreMesh)
+    //  5 - Form Intersection Loops (???)
+    //  6 - Create sub-surfaces (???)
+    //  7 - Assemble and distinguish sub-blocks (???)
+    //  8 - Output sub-surfaces and/or sub-blocks (in this case just 1, but I'm not sure which - I believe an Intersection sub-block)
+    void StrikeMesh(Mesh clipMesh)
+    {
+        Vertex v0 = new Vertex(), v1 = new Vertex(), v2 = new Vertex();
+        v0.Position = new Vector3(2.0f, -2.0f, 0.0f);
+        v1.Position = new Vector3(-2.0f, -2.0f, 0.0f);
+        v2.Position = new Vector3(0.0f, 2.0f, 0.0f);
+        Triangle t1 = new Triangle();
+        t1.V0 = v0;
+        t1.V1 = v1;
+        t1.V2 = v2;
+
+        Vertex u0 = new Vertex(), u1 = new Vertex(), u2 = new Vertex();
+        u0.Position = new Vector3(10.0f, 0.0f, 1.0f);
+        u1.Position = new Vector3(11.0f, 0.0f, -1.0f);
+        u2.Position = new Vector3(9.0f, 0.0f, -1.0f);
+        Triangle t2 = new Triangle();
+        t2.V0 = u0;
+        t2.V1 = u1;
+        t2.V2 = u2;
+
+        t1.Intersect(t2); // SUCCEEDS - SHOULD FAIL!!
+    }
+
 
     // Performs an implementation of the Sutherland-Hodgman Clip Algorithm in 3D space
     // using planes instead of lines. The "clipped" polygon is the Boolean Intersection, which
