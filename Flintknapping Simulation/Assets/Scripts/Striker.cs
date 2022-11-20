@@ -74,6 +74,39 @@ struct Triangle
             return false; // Placeholder
         }
 
+        // Reorganize Vertices and floats (d2v1i) to have the first and third be on the same side of the P2
+        // Modifying Vertex ordering will not have any negative effects, so long as the float distances are updated too
+        {
+            float d2v10Sign = Mathf.Sign(d2v10);
+            float d2v11Sign = Mathf.Sign(d2v11);
+            float d2v12Sign = Mathf.Sign(d2v12);
+             
+            // If the first and third signs are not equal, something must be swapped
+            if (d2v10Sign != d2v12Sign)
+            {
+                if (d2v11Sign == d2v12Sign) // second and third are on same side, so swap first and second
+                {
+                    Vertex tmpV = V0; // Swap Vertices
+                    V0 = V1;
+                    V1 = tmpV;
+
+                    float tmpF = d2v10; // Swap distances calculated from the Vertices
+                    d2v10 = d2v11;
+                    d2v11 = tmpF;
+                }
+                else if (d2v11Sign ==  d2v10Sign) // first and second are on same side, so put third in second
+                {
+                    Vertex tmpV = V2; // Swap Vertices
+                    V2 = V1;
+                    V1 = tmpV;
+
+                    float tmpF = d2v12; // Swap distances calculated from the Vertices
+                    d2v12 = d2v11;
+                    d2v11 = tmpF;
+                }
+            }
+        }
+
         // -- Step 3 - Compute Plane equation of This Triangle (T1)
         Vector3 N1 = CalculateNormal();
         float d1 = Vector3.Dot(-N1, V0.Position);
@@ -100,6 +133,39 @@ struct Triangle
         }
         // No need to check co-planar again - it would have been caught beforehand
 
+        // Reorganize Vertices and floats (d2v1i) to have the first and third be on the same side of the P2
+        // Modifying Vertex ordering will not have any negative effects, so long as the float distances are updated too
+        {
+            float d1v20Sign = Mathf.Sign(d1v20);
+            float d1v21Sign = Mathf.Sign(d1v21);
+            float d1v22Sign = Mathf.Sign(d1v22);
+
+            // If the first and third signs are not equal, something must be swapped
+            if (d1v20Sign != d1v22Sign)
+            {
+                if (d1v21Sign == d1v22Sign) // second and third are on same side, so swap first and second
+                {
+                    Vertex tmpV = other.V0; // Swap Vertices
+                    other.V0 = other.V1;
+                    other.V1 = tmpV;
+
+                    float tmpF = d1v20; // Swap distances calculated from the Vertices
+                    d1v20 = d1v21;
+                    d1v21 = tmpF;
+                }
+                else if (d1v21Sign == d1v20Sign) // first and second are on same side, so put third in second
+                {
+                    Vertex tmpV = other.V2; // Swap Vertices
+                    other.V2 = other.V1;
+                    other.V1 = tmpV;
+
+                    float tmpF = d1v22; // Swap distances calculated from the Vertices
+                    d1v22 = d1v21;
+                    d1v21 = tmpF;
+                }
+            }
+        }
+
         // -- Step 5 - Compute intersection line and project onto largest axis - Projection onto Largest axis is not done,
         // as I do not fully understand the notation described and how the simplification works
         Vector3 D = Vector3.Cross(N1, N2); // D in the equation L = O + tD (O is ignored, since Translation to Origin does not affect result)
@@ -125,6 +191,8 @@ struct Triangle
         float t21 = (pv21 - pv20) * (d1v20 / (d1v20 - d1v21)) + pv20;
         float t22 = (pv21 - pv22) * (d1v22 / (d1v22 - d1v21)) + pv22;
         Vector3 t21t22 = (D * t22) - (D * t21); // Vector of t21 to t22 along L
+
+        Debug.Log($"\nT11: {t11}, T12: {t12}\nT21: {t21}, T22: {t22}");
 
         // -- Step 7 - Intersect the intervals
         float min = t11; // Decide minimum distance along D to an end of an intersection (ignoring O)
