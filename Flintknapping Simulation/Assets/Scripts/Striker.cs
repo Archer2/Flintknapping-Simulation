@@ -12,9 +12,19 @@ using UnityEngine.UIElements;
 struct Vertex
 {
     public Vector3 Position;
-    public Vector3 Normal;
-    public Vector3 Tangent;
-    public Vector2 UV;
+    public Vector3 Normal; // Should end up unused - too complex to fragment into more Triangles
+    public Vector3 Tangent; // Should end up unused - too complex to fragment into more Triangles
+    public Vector2 UV; // Should end up unused - too complex to fragment into more Triangles
+}
+
+// Struct Representing an undirected Edge between two Points in space. This can be stored with
+// a Triangle to determine how it fragments during the intersection (step 2 of Mei and Tipper).
+// Edge Loops can be formed where for any Edge, P1 is P0 of the next Edge in the Loop
+//  - Directions should be implemented, but are difficult to do with Moller
+struct Edge
+{
+    public Vector3 P0; // Head, if being used as Directed
+    public Vector3 P1; // Tail, if being used as Directed
 }
 
 // Struct Representing a single Mesh Triangle. This consists of 3 Vertices, and
@@ -29,7 +39,7 @@ struct Triangle
     public Vector3 CalculateNormal()
     {
         Vector3 v1 = V1.Position - V0.Position;
-        Vector3 v2 = V2.Position - V0.Position; 
+        Vector3 v2 = V2.Position - V0.Position;
         return Vector3.Cross(v1, v2).normalized; // Assumes Winding Order in Clockwise
     }
 
@@ -37,11 +47,12 @@ struct Triangle
     // upon which the Triangles Intersect
     // This assumes both Triangles are within the same coordinate system - 
     // ideally pre-transformed into World Units
+    //  - Performing other.Intersect(this) returns an Edge with the same points
+    //    in reverse order
     //
-    // Returns a boolean indicating whether or not there is an intersecion. In future
-    // this should ALSO return in some form the Edge and Direction (start and end point?)
-    // of the intersection, since that is necessary for constructing the intersection meshes
-    public bool Intersect(Triangle other)
+    // Returns a boolean indicating whether or not there is an intersecion. If an intersection
+    // is found, o_intersection is also set to an edge representing this intersection
+    public bool Intersect(Triangle other, ref Edge o_intersection)
     {
         // -- Step 1 - Compute Plane equation of Other Triangle (T2)
         Vector3 N2 = other.CalculateNormal();
@@ -80,7 +91,7 @@ struct Triangle
             float d2v10Sign = Mathf.Sign(d2v10);
             float d2v11Sign = Mathf.Sign(d2v11);
             float d2v12Sign = Mathf.Sign(d2v12);
-             
+
             // If the first and third signs are not equal, something must be swapped
             if (d2v10Sign != d2v12Sign)
             {
@@ -94,7 +105,7 @@ struct Triangle
                     d2v10 = d2v11;
                     d2v11 = tmpF;
                 }
-                else if (d2v11Sign ==  d2v10Sign) // first and second are on same side, so put third in second
+                else if (d2v11Sign == d2v10Sign) // first and second are on same side, so put third in second
                 {
                     Vertex tmpV = V2; // Swap Vertices
                     V2 = V1;
@@ -186,30 +197,51 @@ struct Triangle
         // -- Step 6 - Compute intervals for each Triangle
         float t11 = (pv11 - pv10) * (d2v10 / (d2v10 - d2v11)) + pv10;
         float t12 = (pv11 - pv12) * (d2v12 / (d2v12 - d2v11)) + pv12;
-        Vector3 t11t12 = (D * t12) - (D * t11); // Vector of t11 to t12 along L
 
         float t21 = (pv21 - pv20) * (d1v20 / (d1v20 - d1v21)) + pv20;
         float t22 = (pv21 - pv22) * (d1v22 / (d1v22 - d1v21)) + pv22;
-        Vector3 t21t22 = (D * t22) - (D * t21); // Vector of t21 to t22 along L
 
         Debug.Log($"\nT11: {t11}, T12: {t12}\nT21: {t21}, T22: {t22}");
 
         // -- Step 7 - Intersect the intervals
-        float min = t11; // Decide minimum distance along D to an end of an intersection (ignoring O)
-        if (min > t12) min = t12;
-        if (min > t21) min = t21;
-        if (min > t22) min = t22;
-        float max = t11; // Repeat for maximum distance
-        if (max < t12) max = t12;
-        if (max < t21) max = t21;
-        if (max < t22) max = t22;
+        // Ensure t11 < t12 and t21 < t22
+        float tmp;
+        if (t11 > t12)
+        {
+            tmp = t11;
+            t11 = t12;
+            t12 = tmp;
+        }
+        if (t21 > t22)
+        {
+            tmp = t21;
+            t21 = t22;
+            t22 = tmp;
+        }
 
-        Vector3 dist = (D * max) - (D * min);
-        if(dist.magnitude >= t11t12.magnitude + t21t22.magnitude)
+        if (t12 < t21 || t22 < t11)
         {
             Debug.Log("Distance between shortest and longest is greater than combined interval length, so they can't overlap");
             return false;
         }
+
+        // Find actual intersection edges
+        List<float> lengths = new List<float>(4);
+
+        // Insert each tij value and sort in increasing order
+        lengths.Add(t11);
+        lengths.Add(t12);
+        lengths.Add(t21);
+        lengths.Add(t22);
+        lengths.Sort();
+        foreach(float v in lengths)
+        {
+            Debug.Log(v);
+        }
+        Debug.Log(D);
+
+        o_intersection.P0 = D * lengths[1]; // Actual intersection is from index 1 to 2
+        o_intersection.P1 = D * lengths[2];
         Debug.Log("INTERSECTION FOUND");
         return true;
     }
@@ -414,15 +446,17 @@ public class Striker : MonoBehaviour
         t1.V2 = v2;
 
         Vertex u0 = new Vertex(), u1 = new Vertex(), u2 = new Vertex();
-        u0.Position = new Vector3(10.0f, 0.0f, 1.0f);
-        u1.Position = new Vector3(11.0f, 0.0f, -1.0f);
-        u2.Position = new Vector3(9.0f, 0.0f, -1.0f);
+        u0.Position = new Vector3(0.0f, 0.0f, 1.0f);
+        u1.Position = new Vector3(1.0f, 0.0f, -1.0f);
+        u2.Position = new Vector3(-1.0f, 0.0f, -1.0f);
         Triangle t2 = new Triangle();
         t2.V0 = u0;
         t2.V1 = u1;
         t2.V2 = u2;
 
-        t1.Intersect(t2); // SUCCEEDS - SHOULD FAIL!!
+        Edge e = new Edge();
+        t1.Intersect(t2, ref e);
+        Debug.Log($"Intersection Edge: {e.P0}, {e.P1}");
     }
 
 
