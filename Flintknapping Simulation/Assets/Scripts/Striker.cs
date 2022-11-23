@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using TMPro.EditorUtilities;
 using Unity.VisualScripting;
 using UnityEngine;
+using UnityEngine.UI;
 using UnityEngine.UIElements;
 
 // Struct Representing all necessary Vertex Data to be tracked for individual
@@ -13,7 +14,7 @@ struct Vertex
 {
     public Vector3 Position;
     public Vector3 Normal; // Should end up unused - too complex to fragment into more Triangles
-    public Vector3 Tangent; // Should end up unused - too complex to fragment into more Triangles
+    public Vector4 Tangent; // Should end up unused - too complex to fragment into more Triangles
     public Vector2 UV; // Should end up unused - too complex to fragment into more Triangles
 }
 
@@ -247,6 +248,92 @@ struct Triangle
     }
 }
 
+// A TriangleMesh is a representation of raw Mesh using whole Triangles. This
+// simplifies the management and code of the algorithm, converting Unity Mesh
+// objects into StrikeMesh objects and back simplifies the number of parts that
+// must be kept track of as the algorithm runs
+struct TriangleMesh
+{
+    public List<Triangle> Triangles;
+
+    // Source need not be normalized into non-indexed storage
+    public void Create(Mesh source)
+    {
+        Triangles.Clear();
+
+        for(int i = 0; i < source.triangles.Length; i += 3)
+        {
+            Vertex v0 = new Vertex(), v1 = new Vertex(), v2 = new Vertex();
+            int t0 = source.triangles[i], t1 = source.triangles[i + 1], t2 = source.triangles[i + 2];
+            
+            v0.Position = source.vertices[t0];
+            v1.Position = source.vertices[t1];
+            v2.Position = source.vertices[t2];
+
+            v0.Normal = source.normals[t0];
+            v1.Normal = source.normals[t1];
+            v2.Normal = source.normals[t2];
+
+            v0.Tangent = source.tangents[t0];
+            v1.Tangent = source.tangents[t1];
+            v2.Tangent = source.tangents[t2];
+
+            v0.UV = source.uv[t0];
+            v1.UV = source.uv[t1];
+            v2.UV = source.uv[t2];
+
+            Triangle tri = new Triangle();
+            tri.V0 = v0;
+            tri.V1 = v1;
+            tri.V2 = v2;
+            Triangles.Add(tri);
+        }
+    }
+
+    public Mesh Extract()
+    {
+        List<Vector3> vertices = new List<Vector3>();
+        List<Vector3> normals = new List<Vector3>();
+        List<Vector4> tangents = new List<Vector4>();
+        List<Vector2> uvs = new List<Vector2>();
+        List<int> indices = new List<int>();
+
+        // Convert each Triangle into Mesh data
+        foreach (Triangle tri in Triangles)
+        {
+            vertices.Add(tri.V0.Position);
+            vertices.Add(tri.V1.Position);
+            vertices.Add(tri.V2.Position);
+
+            normals.Add(tri.V0.Normal);
+            normals.Add(tri.V1.Normal);
+            normals.Add(tri.V2.Normal);
+
+            tangents.Add(tri.V0.Tangent);
+            tangents.Add(tri.V1.Tangent);
+            tangents.Add(tri.V2.Tangent);
+
+            uvs.Add(tri.V0.UV);
+            uvs.Add(tri.V1.UV);
+            uvs.Add(tri.V2.UV);
+
+            for(int i = 0; i < 3; i++)
+            {
+                indices.Add(indices.Count);
+            }
+        }
+
+        // Create Unity Mesh and assign data
+        Mesh mesh = new Mesh();
+        mesh.vertices = vertices.ToArray();
+        mesh.normals = normals.ToArray();
+        mesh.tangents = tangents.ToArray();
+        mesh.uv = uvs.ToArray();
+        mesh.triangles = indices.ToArray();
+        return mesh;
+    }
+}
+
 // Actual Unity Script
 public class Striker : MonoBehaviour
 {
@@ -259,12 +346,12 @@ public class Striker : MonoBehaviour
     void Start()
     {
         // Find any random vertex on the bottom of the core, and move to that vertex location
-        if(coreModel != null && coreMesh != null)
+        if (coreModel != null && coreMesh != null)
         {
             Vector3 min = new Vector3(0, float.MaxValue, 0);
-            for(int i = 0; i < coreMesh.vertices.Length; i++)
+            for (int i = 0; i < coreMesh.vertices.Length; i++)
             {
-                if(coreMesh.vertices[i].y < min.y)
+                if (coreMesh.vertices[i].y < min.y)
                 {
                     min = coreMesh.vertices[i];
                 }
@@ -298,10 +385,10 @@ public class Striker : MonoBehaviour
             coreModel = GameObject.Find("Basic_Core");
         }
         // A bit wacky syntax, but the null state could change inside the previous if{}
-        if(coreModel != null)
+        if (coreModel != null)
         {
             MeshFilter core = coreModel.GetComponent<MeshFilter>();
-            if(core != null)
+            if (core != null)
             {
                 coreMesh = core.mesh; // Could still be null afterwards - CHECK BEFORE USING (TODO: Default to a simple cube?)
             }
@@ -338,14 +425,14 @@ public class Striker : MonoBehaviour
         List<int> indexList = new List<int>();
 
         // Designed for solid-color material (uvs are 00, 10, 11)
-        Action<Vector3, Vector3, Vector3, Vector3> AddTriangle = 
+        Action<Vector3, Vector3, Vector3, Vector3> AddTriangle =
             (Vector3 vert1, Vector3 vert2, Vector3 vert3, Vector3 norm) =>
         {
             vertexList.Add(vert1); vertexList.Add(vert2); vertexList.Add(vert3);
             uvList.Add(new Vector2(0, 0)); uvList.Add(new Vector2(1, 0)); uvList.Add(new Vector2(1, 1));
-            
+
             // Increment indices 3 times, add the same normal to each vertex
-            for(int i = 0; i < 3; i++)
+            for (int i = 0; i < 3; i++)
             {
                 indexList.Add(indexList.Count);
                 normalList.Add(norm);
@@ -406,7 +493,7 @@ public class Striker : MonoBehaviour
         List<int> newIndices = new List<int>();
 
         // For every index/triangle, extract its data to new array, duplicating any data optimized by an index buffer
-        foreach(int index in mesh.triangles)
+        foreach (int index in mesh.triangles)
         {
             newVertices.Add(mesh.vertices[index]);
             newNormals.Add(mesh.normals[index]);
@@ -436,6 +523,8 @@ public class Striker : MonoBehaviour
     //  8 - Output sub-surfaces and/or sub-blocks (in this case just 1, but I'm not sure which - I believe an Intersection sub-block)
     void StrikeMesh(Mesh clipMesh)
     {
+        // ----------------------- TEST TRIANGLE INTERSECTION CODE ------------------------
+        /*
         Vertex v0 = new Vertex(), v1 = new Vertex(), v2 = new Vertex();
         v0.Position = new Vector3(2.0f, -2.0f, 0.0f);
         v1.Position = new Vector3(-2.0f, -2.0f, 0.0f);
@@ -457,6 +546,31 @@ public class Striker : MonoBehaviour
         Edge e = new Edge();
         t1.Intersect(t2, ref e);
         Debug.Log($"Intersection Edge: {e.P0}, {e.P1}");
+        */
+        // --------------------- END TEST TRIANGLE INTERSECTION CODE ----------------------
+
+        // - Step 1: Validate input
+        if (coreMesh == null) { Debug.Log("No Core Mesh Found"); return; }
+        NormalizeMesh(coreMesh);
+        NormalizeMesh(clipMesh);
+        TriangleMesh core = new TriangleMesh(), clip = new TriangleMesh();
+        core.Create(coreMesh);
+        clip.Create(clipMesh);
+
+        // - Step 2: Search for pairs of intersecting Triangles
+        // This step is primarily for identifying Triangles that may potentially
+        // intersect each other using Octrees or some other type of spatial partitioning.
+        // Since I am working with a relatively small number of Triangles, in the
+        // interest of time this step is skipped, and an O(nh) loop is used
+
+
+        // - Step 3: Intersect and re-triangulate
+        // For each triangle of the Core Mesh, record Edges of intersections with
+        // the Clip Mesh
+        foreach(Triangle coreTri in core.Triangles)
+        {
+            
+        }
     }
 
 
