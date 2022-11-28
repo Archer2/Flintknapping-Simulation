@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using TMPro.EditorUtilities;
 using Unity.VisualScripting;
+using UnityEditor.Profiling.Memory.Experimental;
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.UIElements;
@@ -26,6 +27,26 @@ struct Edge
 {
     public Vector3 P0; // Head, if being used as Directed
     public Vector3 P1; // Tail, if being used as Directed
+
+    // Checks if a given Point is on this Edge. Returns false if the
+    // Point is an Endpoint
+    public bool IsPointOnEdge(Vector3 testPoint)
+    {
+        //if (testPoint == P0 || testPoint == P1) return false;
+        //double alpha = (testPoint.x - P0.x) / (P1.x - P0.x);
+        //return (alpha < 0) ? false : (alpha > 1) ? false : true;
+
+        Vector3 p0p1 = P1 - P0;
+        Vector3 p0test = testPoint - P0;
+
+        Vector3 cross = Vector3.Cross(p0p1, p0test);
+        if (cross.sqrMagnitude != 0) return false; // Cross Product magnitude of 0 - points are colliniar
+
+        float dotEdge = Vector3.Dot(p0p1, p0p1);
+        float dotTest = Vector3.Dot(p0p1, p0test);
+
+        return (0 < dotTest && dotTest < dotEdge); // Return False if 0 or dotEdge - if on an Endpoint
+    } 
 }
 
 // Struct Representing a single Mesh Triangle. This consists of 3 Vertices, and
@@ -55,9 +76,21 @@ struct Triangle
     // is found, o_intersection is also set to an edge representing this intersection
     public bool Intersect(Triangle other, ref Edge o_intersection)
     {
+        // -- Step 0: Copy data into operatorTris, since the order of Vertices may be manipulated.
+        //            This is extremely dirty, but its better than coding in a set of equations for
+        //            each case (4-6 different sets of equations, nested within several control blocks,
+        //            is quite dirty)
+        Triangle operandThis = new Triangle(), operandOther = new Triangle();
+        operandThis.V0 = V0;
+        operandThis.V1 = V1;
+        operandThis.V2 = V2;
+        operandOther.V0 = other.V0;
+        operandOther.V1 = other.V1;
+        operandOther.V2 = other.V2;
+
         // -- Step 1 - Compute Plane equation of Other Triangle (T2)
         Vector3 N2 = other.CalculateNormal();
-        float d2 = Vector3.Dot(-N2, other.V0.Position);
+        float d2 = Vector3.Dot(-N2, operandOther.V0.Position);
         Plane plane2 = new Plane(N2, d2); // Create a Unity Plane for access to functions like GetDistanceToPoint, etc.
 
         // Distances of T1 (this) vertices to T2 Plane (other)
@@ -66,9 +99,9 @@ struct Triangle
         //  - 2 - Triangle 2
         //  - v1 - Vertex of Triangle 1
         //  - i - Vertex # of Triangle 1
-        float d2v10 = plane2.GetDistanceToPoint(V0.Position);
-        float d2v11 = plane2.GetDistanceToPoint(V1.Position);
-        float d2v12 = plane2.GetDistanceToPoint(V2.Position);
+        float d2v10 = plane2.GetDistanceToPoint(operandThis.V0.Position);
+        float d2v11 = plane2.GetDistanceToPoint(operandThis.V1.Position);
+        float d2v12 = plane2.GetDistanceToPoint(operandThis.V2.Position);
 
         // -- Step 2 - Reject as trivial if all points of This (T1) are on the same side
         if (d2v10 != 0 && d2v11 != 0 && d2v12 != 0) // All distances are not 0 (no points on the plane)
@@ -76,7 +109,7 @@ struct Triangle
             float d2v10Sign = Mathf.Sign(d2v10);
             if (d2v10Sign == Mathf.Sign(d2v11) && d2v10Sign == Mathf.Sign(d2v12)) // If all share the same sign
             {
-                Debug.Log("All Vertices of Triangle 1 are on the same side of the Plane defined by Triangle 2");
+                //Debug.Log("All Vertices of Triangle 1 are on the same side of the Plane defined by Triangle 2");
                 return false;
             }
         }
@@ -98,9 +131,9 @@ struct Triangle
             {
                 if (d2v11Sign == d2v12Sign) // second and third are on same side, so swap first and second
                 {
-                    Vertex tmpV = V0; // Swap Vertices
-                    V0 = V1;
-                    V1 = tmpV;
+                    Vertex tmpV = operandThis.V0; // Swap Vertices
+                    operandThis.V0 = operandThis.V1;
+                    operandThis.V1 = tmpV;
 
                     float tmpF = d2v10; // Swap distances calculated from the Vertices
                     d2v10 = d2v11;
@@ -108,9 +141,9 @@ struct Triangle
                 }
                 else if (d2v11Sign == d2v10Sign) // first and second are on same side, so put third in second
                 {
-                    Vertex tmpV = V2; // Swap Vertices
-                    V2 = V1;
-                    V1 = tmpV;
+                    Vertex tmpV = operandThis.V2; // Swap Vertices
+                    operandThis.V2 = operandThis.V1;
+                    operandThis.V1 = tmpV;
 
                     float tmpF = d2v12; // Swap distances calculated from the Vertices
                     d2v12 = d2v11;
@@ -121,7 +154,7 @@ struct Triangle
 
         // -- Step 3 - Compute Plane equation of This Triangle (T1)
         Vector3 N1 = CalculateNormal();
-        float d1 = Vector3.Dot(-N1, V0.Position);
+        float d1 = Vector3.Dot(-N1, operandThis.V0.Position);
         Plane plane1 = new Plane(N1, d1);
 
         // Distances of T2 (other) vertices to T1 Plane (this)
@@ -129,9 +162,9 @@ struct Triangle
         //  - d1 - Distance to Triangle 1
         //  - v2 - Vertex of Triangle 2
         //  - i - Vertex # of Triangle 2
-        float d1v20 = plane1.GetDistanceToPoint(other.V0.Position);
-        float d1v21 = plane1.GetDistanceToPoint(other.V1.Position);
-        float d1v22 = plane1.GetDistanceToPoint(other.V2.Position);
+        float d1v20 = plane1.GetDistanceToPoint(operandOther.V0.Position);
+        float d1v21 = plane1.GetDistanceToPoint(operandOther.V1.Position);
+        float d1v22 = plane1.GetDistanceToPoint(operandOther.V2.Position);
 
         // -- Step 4 - Reject as trivial if all points of Other (T2) are on the same side
         if (d1v20 != 0 && d1v21 != 0 && d1v22 != 0) // All distances are not 0 (no points on the plane)
@@ -139,7 +172,7 @@ struct Triangle
             float d1v20Sign = Mathf.Sign(d1v20);
             if (d1v20Sign == Mathf.Sign(d1v21) && d1v20Sign == Mathf.Sign(d1v22)) // If all share the same sign
             {
-                Debug.Log("All Vertices of Triangle 2 are on the same side of the Plane defined by Triangle 2");
+                //Debug.Log("All Vertices of Triangle 2 are on the same side of the Plane defined by Triangle 2");
                 return false;
             }
         }
@@ -157,9 +190,9 @@ struct Triangle
             {
                 if (d1v21Sign == d1v22Sign) // second and third are on same side, so swap first and second
                 {
-                    Vertex tmpV = other.V0; // Swap Vertices
-                    other.V0 = other.V1;
-                    other.V1 = tmpV;
+                    Vertex tmpV = operandOther.V0; // Swap Vertices
+                    operandOther.V0 = operandOther.V1;
+                    operandOther.V1 = tmpV;
 
                     float tmpF = d1v20; // Swap distances calculated from the Vertices
                     d1v20 = d1v21;
@@ -167,9 +200,9 @@ struct Triangle
                 }
                 else if (d1v21Sign == d1v20Sign) // first and second are on same side, so put third in second
                 {
-                    Vertex tmpV = other.V2; // Swap Vertices
-                    other.V2 = other.V1;
-                    other.V1 = tmpV;
+                    Vertex tmpV = operandOther.V2; // Swap Vertices
+                    operandOther.V2 = operandOther.V1;
+                    operandOther.V1 = tmpV;
 
                     float tmpF = d1v22; // Swap distances calculated from the Vertices
                     d1v22 = d1v21;
@@ -186,14 +219,14 @@ struct Triangle
         // Naming convention is pv1i
         //  - pv1 - Projection Vertex of Triangle 1
         //  - i - Vertex # of Triangle 1
-        float pv10 = Vector3.Dot(D, V0.Position);
-        float pv11 = Vector3.Dot(D, V1.Position);
-        float pv12 = Vector3.Dot(D, V2.Position);
+        float pv10 = Vector3.Dot(D, operandThis.V0.Position);
+        float pv11 = Vector3.Dot(D, operandThis.V1.Position);
+        float pv12 = Vector3.Dot(D, operandThis.V2.Position);
 
         // Repeat for Triangle 2 (other) points, same convention
-        float pv20 = Vector3.Dot(D, other.V0.Position);
-        float pv21 = Vector3.Dot(D, other.V1.Position);
-        float pv22 = Vector3.Dot(D, other.V2.Position);
+        float pv20 = Vector3.Dot(D, operandOther.V0.Position);
+        float pv21 = Vector3.Dot(D, operandOther.V1.Position);
+        float pv22 = Vector3.Dot(D, operandOther.V2.Position);
 
         // -- Step 6 - Compute intervals for each Triangle
         float t11 = (pv11 - pv10) * (d2v10 / (d2v10 - d2v11)) + pv10;
@@ -202,7 +235,7 @@ struct Triangle
         float t21 = (pv21 - pv20) * (d1v20 / (d1v20 - d1v21)) + pv20;
         float t22 = (pv21 - pv22) * (d1v22 / (d1v22 - d1v21)) + pv22;
 
-        Debug.Log($"\nT11: {t11}, T12: {t12}\nT21: {t21}, T22: {t22}");
+        //Debug.Log($"\nT11: {t11}, T12: {t12}\nT21: {t21}, T22: {t22}");
 
         // -- Step 7 - Intersect the intervals
         // Ensure t11 < t12 and t21 < t22
@@ -222,7 +255,7 @@ struct Triangle
 
         if (t12 < t21 || t22 < t11)
         {
-            Debug.Log("Distance between shortest and longest is greater than combined interval length, so they can't overlap");
+            //Debug.Log("Distance between shortest and longest is greater than combined interval length, so they can't overlap");
             return false;
         }
 
@@ -235,16 +268,89 @@ struct Triangle
         lengths.Add(t21);
         lengths.Add(t22);
         lengths.Sort();
-        foreach(float v in lengths)
-        {
-            Debug.Log(v);
-        }
-        Debug.Log(D);
+        //foreach(float v in lengths)
+        //{
+            //Debug.Log(v);
+        //}
+        //Debug.Log(D);
 
         o_intersection.P0 = D * lengths[1]; // Actual intersection is from index 1 to 2
         o_intersection.P1 = D * lengths[2];
-        Debug.Log("INTERSECTION FOUND");
+        //Debug.Log("INTERSECTION FOUND");
         return true;
+    }
+}
+
+// A Loop represents a Loop of connected Edges, which can either be Open or Closed. A Closed Loop
+// represents a simple Polygon
+struct Loop
+{
+    private List<Edge> Edges;
+    public List<Edge> GetEdges() { return Edges; }
+    //private List<Vector3> Vertices;
+
+    // Adds an Edge to the Polygon. The new Edge must start at the endpoint of the last Edge
+    // in the Loop OR end at the start of the first Edge. If the Loop is Closed, no new Edges
+    // may be added
+    //  - This is very restrictive, but simplifies the construction process while still adding
+    //    one Edge at a time
+    public bool AddEdge(Edge e)
+    {
+        if (Edges == null) Edges = new List<Edge>();
+
+        if (Edges.Count == 0) // Just Add as the first, but both Vertices are added
+        {
+            Edges.Add(e);
+            //Vertices.Add(e.P0);
+            //Vertices.Add(e.P1);
+            return true;
+        }
+        else if (Closed()) // If the Loop is Closed, don't Add
+        {
+            return false;
+        }
+
+        if (e.P0 == Edges[Edges.Count-1].P1) // Edge added to the Front
+        {
+            Edges.Add(e);
+            //Vertices.Add(e.P1);
+            return true;
+        }
+        else if (e.P1 == Edges[0].P0) // Edge added to the Back
+        {
+            Edges.Insert(0, e);
+            //Vertices.Insert(0, e.P0);
+            return true;
+        }
+        
+        return false;
+    }
+
+    // If the Polygon is not Closed, and already has a working Loop, add an Edge to the specified Point
+    public bool AddPoint(Vector3 p)
+    {
+        if (Edges == null || Closed()) return false;
+
+        Edge e = new Edge();
+        e.P0 = Edges[Edges.Count-1].P1;
+        e.P1 = p;
+        Edges.Add(e);
+        //Vertices.Add(e.P1);
+        return true;   
+    }
+
+    // Returns true if the Polygon Loop is Closed (last Edge ends at first Edge's start)
+    public bool Closed()
+    {
+        if (Edges == null || Edges.Count == 0) return false; // Can't be Closed if there is no Loop
+
+        return Edges[Edges.Count - 1].P1 == Edges[0].P0;
+    }
+
+    // Returns true if the given Edge is in the Loop
+    public bool ContainsEdge(Edge e)
+    {
+        return Edges.Contains(e);
     }
 }
 
@@ -259,7 +365,14 @@ struct TriangleMesh
     // Source need not be normalized into non-indexed storage
     public void Create(Mesh source)
     {
-        Triangles.Clear();
+        if (Triangles == null)
+        {
+            Triangles = new List<Triangle>();
+        }
+        else
+        {
+            Triangles.Clear();
+        }
 
         for(int i = 0; i < source.triangles.Length; i += 3)
         {
@@ -274,9 +387,9 @@ struct TriangleMesh
             v1.Normal = source.normals[t1];
             v2.Normal = source.normals[t2];
 
-            v0.Tangent = source.tangents[t0];
-            v1.Tangent = source.tangents[t1];
-            v2.Tangent = source.tangents[t2];
+            if (source.tangents.Length > t0) v0.Tangent = source.tangents[t0];
+            if (source.tangents.Length > t1) v1.Tangent = source.tangents[t1];
+            if (source.tangents.Length > t2) v2.Tangent = source.tangents[t2];
 
             v0.UV = source.uv[t0];
             v1.UV = source.uv[t1];
@@ -552,7 +665,7 @@ public class Striker : MonoBehaviour
         // - Step 1: Validate input
         if (coreMesh == null) { Debug.Log("No Core Mesh Found"); return; }
         NormalizeMesh(coreMesh);
-        NormalizeMesh(clipMesh);
+        //NormalizeMesh(clipMesh);
         TriangleMesh core = new TriangleMesh(), clip = new TriangleMesh();
         core.Create(coreMesh);
         clip.Create(clipMesh);
@@ -565,11 +678,218 @@ public class Striker : MonoBehaviour
 
 
         // - Step 3: Intersect and re-triangulate
+
+        // This dictionary records all Edges within a Triangle of intersections with other triangles.
+        // From it Edge loops can be constructed (since any edge sharing a point MUST be in the same loop)
+        //  - It is easier to record all Edges, then construct Loops, since that avoids the case of 2 Loops
+        //    beginning separately and then being joined into one (ie: 4-5-6-7 and 8-9-10 and adding 7->8 to either of them)
+        Dictionary<Triangle, List<Edge>> triIntersectionEdges = new Dictionary<Triangle, List<Edge>>();
+        
         // For each triangle of the Core Mesh, record Edges of intersections with
         // the Clip Mesh
-        foreach(Triangle coreTri in core.Triangles)
+        foreach (Triangle coreTri in core.Triangles)
         {
-            
+            // Add the Triangle to the list if it is not already present (it never should be here)
+            // Also add it's bounds as Edges for the fre-Triangulation
+            if (!triIntersectionEdges.ContainsKey(coreTri))
+            {
+                triIntersectionEdges[coreTri] = new List<Edge>();
+                //Edge v0v1 = new Edge(), v1v2 = new Edge(), v2v0 = new Edge();
+                //v0v1.P0 = coreTri.V0.Position;
+                //v0v1.P1 = coreTri.V1.Position;
+                //v1v2.P0 = coreTri.V1.Position;
+                //v1v2.P1 = coreTri.V2.Position;
+                //v2v0.P0 = coreTri.V2.Position;
+                //v2v0.P1 = coreTri.V0.Position;
+                //triIntersectionEdges[coreTri].Add(v0v1);
+                //triIntersectionEdges[coreTri].Add(v1v2);
+                //triIntersectionEdges[coreTri].Add(v2v0);
+            }
+
+            // Check against every Clipping Triangle for intersections
+            foreach (Triangle clipTri in clip.Triangles)
+            {
+                // If this Clip Triangle is not recorded yet, add it (this should only happen on the first loop iteration)
+                if (!triIntersectionEdges.ContainsKey(clipTri))
+                {
+                    triIntersectionEdges[clipTri] = new List<Edge>();
+                    //Edge v0v1 = new Edge(), v1v2 = new Edge(), v2v0 = new Edge();
+                    //v0v1.P0 = clipTri.V0.Position;
+                    //v0v1.P1 = clipTri.V1.Position;
+                    //v1v2.P0 = clipTri.V1.Position;
+                    //v1v2.P1 = clipTri.V2.Position;
+                    //v2v0.P0 = clipTri.V2.Position;
+                    //v2v0.P1 = clipTri.V0.Position;
+                    //triIntersectionEdges[clipTri].Add(v0v1);
+                    //triIntersectionEdges[clipTri].Add(v1v2);
+                    //triIntersectionEdges[clipTri].Add(v2v0);
+                }
+
+                // Intersect Core to Clip, adding the edge in both entries.
+                //  - Potentially, the Edge entered into the Clip Tri should be reversed
+                Edge intersection = new Edge();
+                if (coreTri.Intersect(clipTri, ref intersection)) // Only add Edge if there was an intersection
+                {
+                    // Intersection now holds the intersection Edge, but before it is added
+                    // it must be checked for having a point on another Edge (it would then
+                    // need to split that Edge in 2. 2 Edges should NEVER cross naturally)
+                    //  - UPDATE: This shouldn't happen at all, since with well-formed meshes
+                    //            the only crossing intersections should be on the edge of a Tri,
+                    //            and the original Tri is not currently in the Edge List
+
+                    // Check coreTri for Edge-splitting on Intersection Endpoints
+                    triIntersectionEdges[coreTri].Add(intersection);
+                    /*foreach (Edge e in triIntersectionEdges[coreTri])
+                    {
+                        // If either point is on the Edge, remove this Edge and replace it with 2 others
+                        // OR statement ignores collinear Edges ------------------------------ TODO: POSSIBLE ERROR LOCATION
+                        if (e.IsPointOnEdge(intersection.P0))
+                        {
+                            triIntersectionEdges[coreTri].Remove(e);
+                            Edge e1 = new Edge(), e2 = new Edge();
+                            e1.P0 = e.P0;
+                            e1.P1 = intersection.P0;
+                            e2.P0 = intersection.P0;
+                            e2.P1 = e.P1;
+                            triIntersectionEdges[coreTri].Add(e1);
+                            triIntersectionEdges[coreTri].Add(e2);
+
+                        }
+                        else if (e.IsPointOnEdge(intersection.P1))
+                        {
+                            triIntersectionEdges[coreTri].Remove(e);
+                            Edge e1 = new Edge(), e2 = new Edge();
+                            e1.P0 = e.P0;
+                            e1.P1 = intersection.P1;
+                            e2.P0 = intersection.P1;
+                            e2.P1 = e.P1;
+                            triIntersectionEdges[coreTri].Add(e1);
+                            triIntersectionEdges[coreTri].Add(e2);
+                        }
+                    }*/
+
+                    // Check clipTri for Edge-splitting on Intersection Endpoints
+                    triIntersectionEdges[clipTri].Add(intersection);
+                    /*foreach (Edge e in triIntersectionEdges[clipTri])
+                    {
+                        // If either point is on the Edge, remove this Edge and replace it with 2 others
+                        // OR statement ignores collinear Edges ------------------------------ TODO: POSSIBLE ERROR LOCATION
+                        if (e.IsPointOnEdge(intersection.P0))
+                        {
+                            triIntersectionEdges[clipTri].Remove(e);
+                            Edge e1 = new Edge(), e2 = new Edge();
+                            e1.P0 = e.P0;
+                            e1.P1 = intersection.P0;
+                            e2.P0 = intersection.P0;
+                            e2.P1 = e.P1;
+                            triIntersectionEdges[clipTri].Add(e1);
+                            triIntersectionEdges[clipTri].Add(e2);
+
+                        }
+                        else if (e.IsPointOnEdge(intersection.P1))
+                        {
+                            triIntersectionEdges[clipTri].Remove(e);
+                            Edge e1 = new Edge(), e2 = new Edge();
+                            e1.P0 = e.P0;
+                            e1.P1 = intersection.P1;
+                            e2.P0 = intersection.P1;
+                            e2.P1 = e.P1;
+                            triIntersectionEdges[clipTri].Add(e1);
+                            triIntersectionEdges[clipTri].Add(e2);
+                        }
+                    }*/
+                }
+            }
+        }
+
+        // Triangulate takes a Triangle and a series of Edge Loops within that Triangle, splinters that Triangle into Polygons,
+        // and Triangulates those Polygons. The output is a list of all new Triangles that will replace the origin Triangle
+        Func<Triangle, List<Loop>, List<Triangle>> Triangulate = (Triangle a_origin, List<Loop> a_intersections) =>
+        {
+            // While there are still Edges, make Polygons - OLD APPROACH, operation moved out of Triangulate
+            /*while (a_intersections.Count > 0)
+            {
+                Loop poly = new Loop();
+                poly.AddEdge(a_intersections[0]);
+                a_intersections.RemoveAt(0);
+                while (!poly.Closed())
+                {
+                    bool open = false; // Counter for determining if any edge was found
+                    foreach (Edge e in a_intersections)
+                    {
+                        Edge oppositeE = new Edge();
+                        oppositeE.P0 = e.P1;
+
+                        // If the Opposite is able to be added to this Polygon, then this Edge is backwards,
+
+                        if (poly.AddEdge(e) || poly.AddEdge(oppositeE))
+                        {
+                            a_intersections.Remove(e);
+                            open = true;
+                            break;
+                        }
+                    }
+
+                    // If this block is reached the Polygon is still Open and no Intersection Edge was found,
+                    // so add an Edge from the last point to the appropriate Vertex to form a Polygon and from
+                    // that Vertex to the Loop. All Intersection Edges within this loops should have been added
+                    if (!open)
+                    {
+
+                    }
+                }
+            }*/
+
+            List<Triangle> tris = new List<Triangle>();
+            // Perform Triangulation
+
+            return tris;
+        };
+
+        // Foreach Dictionary entry, form Edge Loops and Triangulate. If a point on an Edge does not
+        // have a corresponding point in another Edge, then it is on one of the 3 original Tri edges
+        foreach (var pair in triIntersectionEdges) // Key is the Triangle, Value is the list of intersecting Edges
+        {
+            // Accumulate all Intersection Edges into Loops (Open or Closed). These will then be added
+            // to the source Triangle iteratively to splinter it for Re-Triangulation
+            List<Loop> intersectionLoops = new List<Loop>();
+            // While there are still Edges, Edge "Loops" can still be created, even if it is just one Edge
+            while (pair.Value.Count != 0)
+            {
+                // Add first Edge
+                Loop loop = new Loop();
+                Edge initial = pair.Value[0];
+                loop.AddEdge(initial);
+                bool bEdgeAdded = true;
+
+                // Iterate through other Edges, attempting to add to the Loop. This nested loop
+                // is quite ugly, but it resolves a case where Edges in a loop are ignored because
+                // they appear in different orderings in the List
+                while (bEdgeAdded)
+                {
+                    bEdgeAdded = false;
+                    foreach(Edge e in pair.Value)
+                    {
+                        if (loop.ContainsEdge(e)) continue; // Quick Exit
+
+                        // Attempt to Add Edge
+                        if(loop.AddEdge(e))
+                        {
+                            bEdgeAdded = true;
+                            break; // Only add one Edge at a time
+                        }
+                    }
+                }
+
+                // No Edges were added, so remove the Loop from the list
+                foreach (Edge e in loop.GetEdges())
+                {
+                    pair.Value.Remove(e);
+                }
+                intersectionLoops.Add(loop);
+            }
+
+            List<Triangle> triangulation = Triangulate(pair.Key, intersectionLoops);
         }
     }
 
