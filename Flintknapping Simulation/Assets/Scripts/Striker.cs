@@ -99,7 +99,7 @@ struct Triangle
         {
             o_intersection.P0 = p1;
             o_intersection.P1 = p2;
-            Debug.DrawLine(p1, p2, Color.magenta, 10000);
+            //Debug.DrawLine(p1, p2, Color.magenta, 10000);
         }
         return intersected;
 
@@ -1045,7 +1045,7 @@ public class Striker : MonoBehaviour
                     }
                     else
                     {
-                        Debug.Log("What the fuck happened here?");
+                        Debug.Log("What happened here?");
                     }
                 }
 
@@ -1156,16 +1156,261 @@ public class Striker : MonoBehaviour
             }
 
             // Display results for intermediate testing - TODO: REMOVE
-            foreach (Loop polygon in polys)
+            //foreach (Loop polygon in polys)
+            //{
+            //    Color c = new Color(UnityEngine.Random.Range(0f, 1f), UnityEngine.Random.Range(0f, 1f), UnityEngine.Random.Range(0f, 1f));
+            //    foreach (Edge e in polygon.GetEdges())
+            //    {
+            //        Debug.DrawLine(e.P0, e.P1, c, 10000);
+            //    }
+            //}
+
+            // Perform Triangulation
+            List<Triangle> tris = new List<Triangle>();
+            foreach (Loop poly in polys)
             {
-                foreach (Edge e in polygon.GetEdges())
+                List<Edge> polyEdges = poly.GetEdges();
+                // Failsafe
+                if (polyEdges.Count < 3)
                 {
-                    Debug.DrawLine(e.P0, e.P1, Color.cyan, 10000);
+                    Debug.Log("Polygon with < 3 Edges found...what?");
+                    continue;
+                }
+
+                // If it only has 3 Edges then no need to Triangulate further
+                if (polyEdges.Count == 3)
+                {
+                    Triangle t = new Triangle();
+                    Vertex v0 = new Vertex(), v1 = new Vertex(), v2 = new Vertex();
+                    v0.Position = polyEdges[0].P0; 
+                    v1.Position = polyEdges[1].P0;
+                    v2.Position = polyEdges[2].P0;
+
+                    // Ignore Normal, Tangent, and UV
+                    t.V0 = v0;
+                    t.V1 = v1;
+                    t.V2 = v2;
+                    tris.Add(t);
+                    continue;
+                }
+
+                // Perform Ear-Clipping algorithm (David Eberly, 2002)
+                // First step is to establish a list of all Vertices
+                List<Vector3> polyVertices = new List<Vector3>();
+                foreach (Edge e in polyEdges)
+                {
+                    polyVertices.Add(e.P0); // Every vertex is P0 exactly once
+                }
+
+                // Determine Direction of the Polygon - requires Cross product of 3 Vertices on Convex Hull.
+                // This is needed to determine if vertices are reflex or convex
+                // Finding the lowest-x Vertex means it must be on the Convex Hull (and its neighbors, since
+                // it cannot be locally concave)
+                int smallestXIndex = 0; // Start by assuming at index 0
+                for (int i = 1; i < polyVertices.Count; i++)
+                {
+                    if (polyVertices[i].x < polyVertices[smallestXIndex].x) smallestXIndex = i;
+                }
+                Vector3 convexPoint = polyVertices[smallestXIndex];
+                Vector3 prev = (smallestXIndex == 0) ? polyVertices[polyVertices.Count - 1] : polyVertices[smallestXIndex - 1]; // Cyclic behavior
+                Vector3 next = (smallestXIndex == polyVertices.Count - 1) ? polyVertices[0] : polyVertices[smallestXIndex + 1]; // Cyclic behavior
+
+                Vector3 polyDirection = Vector3.Normalize(Vector3.Cross(convexPoint - prev, next - convexPoint));
+
+                // Construct list of reflex Vertices and Ears
+                List<Vector3> reflexVertices = new List<Vector3>(), ears = new List<Vector3>();
+                for (int i = 0; i < polyVertices.Count; i++) // Reflex Vertices
+                {
+                    // Determine this, next, and prev vertices using the List as a cycle
+                    Vector3 vert = polyVertices[i];
+                    prev = (i == 0) ? polyVertices[polyVertices.Count - 1] : polyVertices[i - 1];
+                    next = (i == polyVertices.Count - 1) ? polyVertices[0] : polyVertices[i + 1];
+
+                    Vector3 vertDirection = Vector3.Normalize(Vector3.Cross(vert - prev, next - vert));
+                    if (vertDirection == -polyDirection) // Opposite normal, so Reflex
+                    {
+                        reflexVertices.Add(vert);
+                    }
+                }
+                for (int i = 0; i < polyVertices.Count; i++) // Ears
+                {
+                    Vector3 vert = polyVertices[i];
+                    if (reflexVertices.Contains(vert)) continue; // Reflex cannot be Ear
+
+                    // Next and Last Vertices for forming the Triangle
+                    prev = (i == 0) ? polyVertices[polyVertices.Count - 1] : polyVertices[i - 1];
+                    next = (i == polyVertices.Count - 1) ? polyVertices[0] : polyVertices[i + 1];
+
+                    bool bIsEar = true;
+
+                    // Use Barycentric coordinates for determining if a point is within the Triangle defined
+                    // by the 3 points. Uses method from pages 2 and 3 of
+                    // https://ceng2.ktu.edu.tr/~cakir/files/grafikler/Texture_Mapping.pdf
+                    Vector3 v0 = prev - vert, v1 = next - vert;
+                    float d00 = Vector3.Dot(v0, v0);
+                    float d01 = Vector3.Dot(v0, v1);
+                    float d11 = Vector3.Dot(v1, v1);
+                    float denom = d00 * d11 - d01 * d01;
+                    foreach (Vector3 reflex in reflexVertices)
+                    {
+                        Vector3 v2 = reflex - vert;
+                        float d20 = Vector3.Dot(v2, v0);
+                        float d21 = Vector3.Dot(v2, v1);
+
+                        float bv = (d11 * d20 - d01 * d21) / denom;
+                        float bw = (d00 * d21 - d01 * d20) / denom;
+                        float bu = 1.0f - bv - bw;
+
+                        // If the point is inside the Triangle, it is not an Ear
+                        if (bv <= 1.0f && bv >= 0.0f
+                            && bw <= 1.0f && bw >= 0.0f
+                            && bu <= 1.0f && bu >= 0.0f
+                            && bv + bw + bu == 1.0f)
+                        {
+                            bIsEar = false;
+                            break;
+                        }
+                    }
+
+                    // If no reflex Vertices were within the Triangle, it is an Ear
+                    if (bIsEar) ears.Add(vert);
+                }
+
+                // Remove Ears until there are no Ears to remove
+                while (ears.Count > 2)
+                {
+                    // Take first Ear in the list
+                    Vector3 vert = ears[0];
+                    int earIndex = polyVertices.IndexOf(vert);
+                    prev = (earIndex == 0) ? polyVertices[polyVertices.Count - 1] : polyVertices[earIndex - 1];
+                    next = (earIndex == polyVertices.Count - 1) ? polyVertices[0] : polyVertices[earIndex + 1];
+
+                    // Create and add Triangle to output
+                    Vertex triV0 = new Vertex(), triV1 = new Vertex(), triV2 = new Vertex();
+                    triV0.Position = prev;
+                    triV1.Position = vert;
+                    triV2.Position = next;
+                    Triangle tri = new Triangle();
+                    tri.V0 = triV0;
+                    tri.V1 = triV1;
+                    tri.V2 = triV2;
+                    tris.Add(tri);
+
+                    // Adjust neighboring Vertices
+                    polyVertices.Remove(vert); // Can no longer affect neighbors, will affect indices
+                    ears.Remove(vert);
+                    int prevIndex = polyVertices.IndexOf(prev);
+                    int nextIndex = polyVertices.IndexOf(next);
+
+                    // Previous
+                    vert = prev;
+                    prev = (prevIndex == 0) ? polyVertices[polyVertices.Count - 1] : polyVertices[prevIndex - 1];
+                    // next does not change
+                    
+                    // If this vertex was reflex, check if it still is
+                    if (reflexVertices.Contains(vert))
+                    {
+                        Vector3 vertDirection = Vector3.Normalize(Vector3.Cross(vert - prev, next - vert));
+                        if (vertDirection == polyDirection) // Same normal, so no longer reflex
+                        {
+                            reflexVertices.Remove(vert);
+                        }
+                    }
+                    // If the vertex is now not reflex, check if it is an Ear. If it is not now, and was, remove it
+                    if (!reflexVertices.Contains(vert))
+                    {
+                        bool bIsEar = true;
+
+                        // Use Barycentric coordinates for determining if a point is within the Triangle defined
+                        // by the 3 points. Uses method from pages 2 and 3 of
+                        // https://ceng2.ktu.edu.tr/~cakir/files/grafikler/Texture_Mapping.pdf
+                        Vector3 v0 = prev - vert, v1 = next - vert;
+                        float d00 = Vector3.Dot(v0, v0);
+                        float d01 = Vector3.Dot(v0, v1);
+                        float d11 = Vector3.Dot(v1, v1);
+                        float denom = d00 * d11 - d01 * d01;
+                        foreach (Vector3 reflex in reflexVertices)
+                        {
+                            Vector3 v2 = reflex - vert;
+                            float d20 = Vector3.Dot(v2, v0);
+                            float d21 = Vector3.Dot(v2, v1);
+
+                            float bv = (d11 * d20 - d01 * d21) / denom;
+                            float bw = (d00 * d21 - d01 * d20) / denom;
+                            float bu = 1.0f - bv - bw;
+
+                            // If the point is inside the Triangle, it is not an Ear
+                            if (bv <= 1.0f && bv >= 0.0f
+                                && bw <= 1.0f && bw >= 0.0f
+                                && bu <= 1.0f && bu >= 0.0f
+                                && bv + bw + bu == 1.0f)
+                            {
+                                bIsEar = false;
+                                break;
+                            }
+                        }
+
+                        bool bWasEar = ears.Contains(vert);
+                        if (bWasEar && !bIsEar) ears.Remove(vert);
+                        else if (!bWasEar && bIsEar) ears.Add(vert);
+                        // If it was and still is, do nothing
+                    }
+
+                    // Next
+                    prev = vert; // next is now next of original previous
+                    vert = next; // Unchanged during Previous calculation
+                    next = (nextIndex == polyVertices.Count - 1) ? polyVertices[0] : polyVertices[nextIndex + 1];
+
+                    // If this vertex was reflex, check if it still is
+                    if (reflexVertices.Contains(vert))
+                    {
+                        Vector3 vertDirection = Vector3.Normalize(Vector3.Cross(vert - prev, next - vert));
+                        if (vertDirection == polyDirection) // Same normal, so no longer reflex
+                        {
+                            reflexVertices.Remove(vert);
+                        }
+                    }
+                    // If the vertex is now not reflex, check if it is an Ear. If it is not now, and was, remove it
+                    if (!reflexVertices.Contains(vert))
+                    {
+                        bool bIsEar = true;
+
+                        // Use Barycentric coordinates for determining if a point is within the Triangle defined
+                        // by the 3 points. Uses method from pages 2 and 3 of
+                        // https://ceng2.ktu.edu.tr/~cakir/files/grafikler/Texture_Mapping.pdf
+                        Vector3 v0 = prev - vert, v1 = next - vert;
+                        float d00 = Vector3.Dot(v0, v0);
+                        float d01 = Vector3.Dot(v0, v1);
+                        float d11 = Vector3.Dot(v1, v1);
+                        float denom = d00 * d11 - d01 * d01;
+                        foreach (Vector3 reflex in reflexVertices)
+                        {
+                            Vector3 v2 = reflex - vert;
+                            float d20 = Vector3.Dot(v2, v0);
+                            float d21 = Vector3.Dot(v2, v1);
+
+                            float bv = (d11 * d20 - d01 * d21) / denom;
+                            float bw = (d00 * d21 - d01 * d20) / denom;
+                            float bu = 1.0f - bv - bw;
+
+                            // If the point is inside the Triangle, it is not an Ear
+                            if (bv <= 1.0f && bv >= 0.0f
+                                && bw <= 1.0f && bw >= 0.0f
+                                && bu <= 1.0f && bu >= 0.0f
+                                && bv + bw + bu == 1.0f)
+                            {
+                                bIsEar = false;
+                                break;
+                            }
+                        }
+
+                        bool bWasEar = ears.Contains(vert);
+                        if (bWasEar && !bIsEar) ears.Remove(vert);
+                        else if (!bWasEar && bIsEar) ears.Add(vert);
+                        // If it was and still is, do nothing
+                    }
                 }
             }
-
-            List<Triangle> tris = new List<Triangle>();
-            // Perform Triangulation
 
             return tris;
         };
@@ -1219,6 +1464,14 @@ public class Striker : MonoBehaviour
 
             if (intersectionLoops.Count == 0) continue; // Do not retriangulate if no Loops are found
             List<Triangle> triangulation = Triangulate(pair.Key, intersectionLoops);
+
+            foreach (Triangle t in triangulation)
+            {
+                Color c = new Color(UnityEngine.Random.Range(0f, 1f), UnityEngine.Random.Range(0f, 1f), UnityEngine.Random.Range(0f, 1f));
+                Debug.DrawLine(t.V0.Position, t.V1.Position, c, 10000);
+                Debug.DrawLine(t.V1.Position, t.V2.Position, c, 10000);
+                Debug.DrawLine(t.V2.Position, t.V0.Position, c, 10000);
+            }
         }
     }
 
