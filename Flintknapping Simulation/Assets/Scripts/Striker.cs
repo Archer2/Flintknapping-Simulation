@@ -19,14 +19,22 @@ struct Vertex
     public Vector2 UV; // Should end up unused - too complex to fragment into more Triangles
 }
 
-// Struct Representing an undirected Edge between two Points in space. This can be stored with
+// Struct Representing a directed Edge between two Points in space. This can be stored with
 // a Triangle to determine how it fragments during the intersection (step 2 of Mei and Tipper).
 // Edge Loops can be formed where for any Edge, P1 is P0 of the next Edge in the Loop
-//  - Directions should be implemented, but are difficult to do with Moller
 class Edge
 {
     public Vector3 P0; // Head, if being used as Directed
     public Vector3 P1; // Tail, if being used as Directed
+
+    // Returns an Edge with the points swapped, for reversed directional usage
+    public Edge Inverted()
+    {
+        Edge e = new Edge();
+        e.P0 = P1;
+        e.P1 = P0;
+        return e;
+    }
 
     // Checks if a given Point is on this Edge. Returns false if the
     // Point is an Endpoint
@@ -39,13 +47,18 @@ class Edge
         Vector3 p0p1 = P1 - P0;
         Vector3 p0test = testPoint - P0;
 
-        Vector3 cross = Vector3.Cross(p0p1, p0test);
-        if (cross.sqrMagnitude != 0) return false; // Cross Product magnitude of 0 - points are colliniar
+        // Cross product method does not work. Instead I use actual distance to line
+        //Vector3 cross = Vector3.Cross(p0p1, p0test);
+        //if (cross.magnitude >= 0.0001f) 
+        //    return false; // Cross Product magnitude of 0 means points are colliniar
+        float distToLine = Vector3.Cross(P1 - P0, P0 - testPoint).magnitude / (P1 - P0).magnitude;
+        if (distToLine > 0.00001f)
+            return false;
 
         float dotEdge = Vector3.Dot(p0p1, p0p1);
         float dotTest = Vector3.Dot(p0p1, p0test);
 
-        return (0 < dotTest && dotTest < dotEdge); // Return False if 0 or dotEdge - if on an Endpoint
+        return (0 <= dotTest && dotTest <= dotEdge); // Return False if 0 or dotEdge - if on an Endpoint
     } 
 }
 
@@ -383,7 +396,13 @@ class Loop
     // Returns true if the given Edge is in the Loop
     public bool ContainsEdge(Edge e)
     {
-        return Edges.Contains(e);
+        //return Edges.Contains(e); // This causes an error where a single loop does not find any polygon to split in
+                                    // one of the Triangles. Why? I don't know
+        foreach (Edge edge in Edges)
+        {
+            if (edge.P0 == e.P0 && edge.P1 == e.P1) return true;
+        }
+        return false;
     }
 
     // Retrieves the first point in the Loop. If there is no Loop, returns false and does not set the point
@@ -881,7 +900,6 @@ public class Striker : MonoBehaviour
         // and Triangulates those Polygons. The output is a list of all new Triangles that will replace the origin Triangle
         Func<Triangle, List<Loop>, List<Triangle>> Triangulate = (Triangle a_origin, List<Loop> a_intersections) =>
         {
-            Debug.Log("Triangulate Invoked");
             // Cut Loops off of the Triangle
             List<Loop> polys = new List<Loop>();
             Loop initialTri = new Loop();
@@ -918,11 +936,14 @@ public class Striker : MonoBehaviour
                 }
 
                 Loop cutPolygon = null; // Polygon that this Loop will cut
+                Edge[] loopEdges = new Edge[2]; // Edges of the intersected Polygon.
+                                                // Index 0 is the starting Edge, Index 1 is the ending Edge
 
                 // Find the Polygon in the Triangle to be split in 2 by this Loop
                 foreach (Loop poly in polys)
                 {
-                    Edge[] loopEdges = new Edge[2]; // Index 0 is the starting Edge, Index 1 is the ending Edge
+                    // Reset loopEdge records, to this polygon
+                    loopEdges[0] = null; loopEdges[1] = null;
 
                     // Test to find Edges that hold the ends of the Loop
                     foreach(Edge polyEdge in poly.GetEdges())
@@ -930,7 +951,7 @@ public class Striker : MonoBehaviour
                         // Check each endpoint separately, but they may be on the same Edge
                         if (polyEdge.IsPointOnEdge(loopStart))
                         {
-                            loopEdges[0] = polyEdge;       
+                            loopEdges[0] = polyEdge;
                         }
                         if (polyEdge.IsPointOnEdge(loopEnd))
                         {
@@ -955,8 +976,191 @@ public class Striker : MonoBehaviour
                 // If there was no Polygon found for this Loop to divide, there must have been an error
                 if (cutPolygon == null)
                 {
+                    // Debug bad intersections
+                    /*
+                    foreach(Edge broken in loop.GetEdges())
+                    {
+                        Debug.DrawLine(broken.P0, broken.P1, Color.cyan, 10000);
+                    }
+                    Debug.Log("Testing Distance to Edges");
+                    foreach(Loop poly in polys)
+                    {
+                        Debug.Log("Polygon Start");
+                        float smallestStart = (float)int.MaxValue;
+                        float smallestEnd = (float)int.MaxValue;
+                        foreach (Edge bad in poly.GetEdges())
+                        {
+                            float startDistance = Vector3.Cross(bad.P1 - bad.P0, bad.P0 - loopStart).magnitude / (bad.P1 - bad.P0).magnitude;
+                            float endDistance = Vector3.Cross(bad.P1 - bad.P0, bad.P0 - loopEnd).magnitude / (bad.P1 - bad.P0).magnitude;
+
+                            if (startDistance < smallestStart)
+                            {
+                                smallestStart = startDistance;
+                            }
+
+                            if (endDistance < smallestEnd)
+                            {
+                                smallestEnd = endDistance;
+                            }
+                        }
+                        Debug.Log($"Smallest Distance to Start: {smallestStart}, End: {smallestEnd}");
+                        Debug.Log("Polygon End");
+                    }
+                    */
                     Debug.Log("Error: No Polygon within the Triangle found to split by this Edge Loop");
                     continue;
+                }
+
+                // Split the Polygon in two based on the Loop
+                // Split intersected Edges in 2 based on Endpoint location
+                List<Edge> oldEdges = cutPolygon.GetEdges(); // Ordered list of Edges in the Polygon, but modifiable
+                //int polyIndex = polys.IndexOf(cutPolygon);
+                //polys.RemoveAt(polyIndex);
+                polys.Remove(cutPolygon);
+
+                int startSplitIndex = oldEdges.IndexOf(loopEdges[0]);
+                if (loopStart != loopEdges[0].P0 && loopStart != loopEdges[0].P1)
+                {
+                    Edge e1 = new Edge(), e2 = new Edge();
+                    e1.P0 = loopEdges[0].P0;
+                    e1.P1 = loopStart;
+                    e2.P0 = loopStart;
+                    e2.P1 = loopEdges[0].P1;
+                    oldEdges.RemoveAt(startSplitIndex);
+                    oldEdges.Insert(startSplitIndex, e1);
+                    oldEdges.Insert(startSplitIndex + 1, e2);
+                }
+
+                // Before splitting the second Edge it must be checked that both endpoints are not on the same Edge
+                // If they are, then the second endpoint must be on one of the newly added Edges instead
+                if (loopEdges[0] == loopEdges[1])
+                {
+                    if (oldEdges[startSplitIndex].IsPointOnEdge(loopEnd))
+                    {
+                        loopEdges[1] = oldEdges[startSplitIndex];
+                    }
+                    else if (oldEdges[startSplitIndex + 1].IsPointOnEdge(loopEnd))
+                    {
+                        loopEdges[1] = oldEdges[startSplitIndex + 1];
+                    }
+                    else
+                    {
+                        Debug.Log("What the fuck happened here?");
+                    }
+                }
+
+                int endSplitIndex = oldEdges.IndexOf(loopEdges[1]); // Must be recorded after Start additions
+                if (loopEnd != loopEdges[1].P0 && loopEnd != loopEdges[1].P1)
+                {
+                    Edge e1 = new Edge(), e2 = new Edge();
+                    e1.P0 = loopEdges[1].P0;
+                    e1.P1 = loopEnd;
+                    e2.P0 = loopEnd;
+                    e2.P1 = loopEdges[1].P1;
+                    oldEdges.RemoveAt(endSplitIndex);
+                    oldEdges.Insert(endSplitIndex, e1);
+                    oldEdges.Insert(endSplitIndex + 1, e2);
+                }
+
+                // Form 2 New Polygons
+                // Utilizing the loopStart Vertex, we know that it has 2 Edges with it as P0. These are
+                // the first Edge in the split Loop and oldEdges[startSplitIndex+1]. The polygons are thus
+                // those formed by proceeding around the Edges beginning with each of these Edges. While
+                // loopStart is P0 to 2 Edges, loopEnd is P0 only to 1, by virtue of the loop being Open,
+                // and we know this is the Edge at oldEdges[endSplitIndex+1]
+                Loop poly1 = new Loop(), poly2 = new Loop();
+
+                // Form Poly1
+                // startSplitIndex+1 may no longer be accurate if the end of the Loop was on the same
+                // original Edge. This is sub-optimal, but just search for the non-loop Edge that starts
+                // at the start of the Loop
+                foreach(Edge e in oldEdges)
+                {
+                    if (e.P0 == loopStart)
+                    {
+                        poly1.AddEdge(e);
+                        break;
+                    }
+                }
+                // Until the Polygon is closed (has reached original point), add Edges
+                while (!poly1.Closed())
+                {
+                    Vector3 lastPoint = new Vector3();
+                    poly1.LastPoint(ref lastPoint);
+
+                    // If we have reached the end of the Loop, add the Loop in reverse
+                    // Afterwards poly1 should be closed and the loop should break
+                    if (lastPoint == loopEnd)
+                    {
+                        for(int i = loop.GetEdges().Count-1; i >= 0; i--)
+                        {
+                            if (!poly1.AddEdge(loop.GetEdges()[i].Inverted()))
+                            {
+                                Debug.Log("Error: Polygon Creation");
+                            }
+                        }
+
+                        // Error report
+                        if (!poly1.Closed()) Debug.Log("Error: Polygon 1 failed to Close");
+                    }
+                    else // Add the next Edge in the List, which should work since it is already sorted
+                    {
+                        Edge edge = null;
+                        // Horribly inefficient. Optimizing by utilizing the sorted nature of oldEdges causes unknown errors
+                        foreach (Edge e in oldEdges)
+                        {
+                            if (e.P0 == lastPoint)
+                            {
+                                edge = e;
+                                break; // Early escape
+                            }
+                        }
+                        // If an Edge cannot be added, there is an error. Break from the loop to avoid infinite
+                        if (edge == null || !poly1.AddEdge(edge))
+                        {
+                            Debug.Log("Error: Polygon Creation");
+                            break;
+                        }
+                    }
+                }
+                polys.Add(poly1);
+
+                // Form Poly2
+                // Start by adding the Loop to this poly
+                foreach (Edge e in loop.GetEdges())
+                {
+                    poly2.AddEdge(e);
+                }
+                // Until the Loop is closed, add Edges from the Old Polygon
+                while (!poly2.Closed())
+                {
+                    Edge edge = null;
+                    Vector3 lastPoint = new Vector3();
+                    poly2.LastPoint(ref lastPoint);
+                    foreach (Edge e in oldEdges)
+                    {
+                        if (e.P0 == lastPoint)
+                        {
+                            edge = e;
+                            break;
+                        }
+                    }
+                    // Check for errors in finding or adding
+                    if (edge == null || !poly2.AddEdge(edge))
+                    {
+                        Debug.Log("Error: Polygon Creation");
+                        break; // Escape infinite loop
+                    }
+                }
+                polys.Add(poly2);
+            }
+
+            // Display results for intermediate testing - TODO: REMOVE
+            foreach (Loop polygon in polys)
+            {
+                foreach (Edge e in polygon.GetEdges())
+                {
+                    Debug.DrawLine(e.P0, e.P1, Color.cyan, 10000);
                 }
             }
 
@@ -992,10 +1196,10 @@ public class Striker : MonoBehaviour
                     bEdgeAdded = false;
                     foreach(Edge e in pair.Value)
                     {
-                        if (loop.ContainsEdge(e)) continue; // Quick Exit
+                        if (loop.ContainsEdge(e) || loop.ContainsEdge(e.Inverted())) continue;
 
                         // Attempt to Add Edge
-                        if(loop.AddEdge(e))
+                        if (loop.AddEdge(e) || loop.AddEdge(e.Inverted()))
                         {
                             bEdgeAdded = true;
                             break; // Only add one Edge at a time
@@ -1007,6 +1211,8 @@ public class Striker : MonoBehaviour
                 foreach (Edge e in loop.GetEdges())
                 {
                     pair.Value.Remove(e);
+                    pair.Value.Remove(e.Inverted()); // This should take into account reversed Edges,
+                                                     // and no 2 Edges in the same tri should be inversely equal
                 }
                 intersectionLoops.Add(loop);
             }
