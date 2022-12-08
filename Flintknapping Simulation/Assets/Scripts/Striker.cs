@@ -473,7 +473,8 @@ struct TriangleMesh
         }
     }
 
-    public Mesh Extract()
+    // Providing a transform allows positions be converted away from world space
+    public Mesh Extract(Transform transform)
     {
         List<Vector3> vertices = new List<Vector3>();
         List<Vector3> normals = new List<Vector3>();
@@ -484,13 +485,15 @@ struct TriangleMesh
         // Convert each Triangle into Mesh data
         foreach (Triangle tri in Triangles)
         {
-            vertices.Add(tri.V0.Position);
-            vertices.Add(tri.V1.Position);
-            vertices.Add(tri.V2.Position);
+            vertices.Add(transform.InverseTransformPoint(tri.V0.Position));
+            vertices.Add(transform.InverseTransformPoint(tri.V1.Position));
+            vertices.Add(transform.InverseTransformPoint(tri.V2.Position));
 
-            normals.Add(tri.V0.Normal);
-            normals.Add(tri.V1.Normal);
-            normals.Add(tri.V2.Normal);
+            // If no normal exists, use the default Triangle normal
+            Vector3 defaultNormal = tri.CalculateNormal();
+            normals.Add((tri.V0.Normal.sqrMagnitude != 0) ? tri.V0.Normal : defaultNormal);
+            normals.Add((tri.V1.Normal.sqrMagnitude != 0) ? tri.V1.Normal : defaultNormal);
+            normals.Add((tri.V2.Normal.sqrMagnitude != 0) ? tri.V2.Normal : defaultNormal);
 
             tangents.Add(tri.V0.Tangent);
             tangents.Add(tri.V1.Tangent);
@@ -795,7 +798,7 @@ public class Striker : MonoBehaviour
                 //triIntersectionEdges[coreTri].Add(v2v0);
             }
 
-            // Check against every Clipping Triangle for intersections
+            // Check against every Clipping Triangle for intersections - inefficient, but that can be improved later
             foreach (Triangle clipTri in clip.Triangles)
             {          
                 // If this Clip Triangle is not recorded yet, add it (this should only happen on the first loop iteration)
@@ -896,525 +899,6 @@ public class Striker : MonoBehaviour
             }
         }
 
-        // Triangulate takes a Triangle and a series of Edge Loops within that Triangle, splinters that Triangle into Polygons,
-        // and Triangulates those Polygons. The output is a list of all new Triangles that will replace the origin Triangle
-        Func<Triangle, List<Loop>, List<Triangle>> Triangulate = (Triangle a_origin, List<Loop> a_intersections) =>
-        {
-            // Cut Loops off of the Triangle
-            List<Loop> polys = new List<Loop>();
-            Loop initialTri = new Loop();
-            // Create initial Triangle polygon. Local braces added to avoid recording of variables
-            {
-                Edge e = new Edge();
-                e.P0 = a_origin.V0.Position;
-                e.P1 = a_origin.V1.Position;
-                initialTri.AddEdge(e);
-                initialTri.AddPoint(a_origin.V2.Position);
-                initialTri.AddPoint(a_origin.V0.Position); // Close Polygon
-            }
-            polys.Add(initialTri);
-
-            // Iteratively remove Loops
-            foreach (Loop loop in a_intersections)
-            {
-                // If the Loop is closed it is located within one of the final Polygons, and severly complicates
-                // Triangulation, but should not happen with well-formed meshes
-                //  - In some error cases (likely floating point math), a Loop of 1 Edge with identical points
-                //    will be found. This is culled before adding to the Triangle's intersection list
-                if (loop.Closed())
-                {
-                    Debug.Log($"Closed Loop Intersection Found - Edge Count: {loop.GetEdges().Count}");
-                    continue; // Closed Loops involve fractionation and are not supported
-                }
-
-                // Get Endpoints of the Loop
-                Vector3 loopStart = new Vector3(), loopEnd = new Vector3();
-                if (!loop.FirstPoint(ref loopStart) || !loop.LastPoint(ref loopEnd))
-                {
-                    Debug.Log("Loop does not exist?");
-                    continue;
-                }
-
-                Loop cutPolygon = null; // Polygon that this Loop will cut
-                Edge[] loopEdges = new Edge[2]; // Edges of the intersected Polygon.
-                                                // Index 0 is the starting Edge, Index 1 is the ending Edge
-
-                // Find the Polygon in the Triangle to be split in 2 by this Loop
-                foreach (Loop poly in polys)
-                {
-                    // Reset loopEdge records, to this polygon
-                    loopEdges[0] = null; loopEdges[1] = null;
-
-                    // Test to find Edges that hold the ends of the Loop
-                    foreach(Edge polyEdge in poly.GetEdges())
-                    {
-                        // Check each endpoint separately, but they may be on the same Edge
-                        if (polyEdge.IsPointOnEdge(loopStart))
-                        {
-                            loopEdges[0] = polyEdge;
-                        }
-                        if (polyEdge.IsPointOnEdge(loopEnd))
-                        {
-                            loopEdges[1] = polyEdge;
-                        }
-
-                        // Cut out early if both Edges are found
-                        if (loopEdges[0] != null && loopEdges[1] != null) break;
-                    }
-
-                    // If both endpoints are on this Polygon, this one will be split by the Loop
-                    //  - With well-formed meshes, the only possible Polygon Edges that should have
-                    //    both endpoints are Edges stemming from the original Triangle, so the found
-                    //    polygon will have no duplicate on the opposite side of the Edge ------------- TODO: True?
-                    if (loopEdges[0] != null && loopEdges[1] != null) 
-                    {
-                        cutPolygon = poly;
-                        break; // The Loop cannot split more than one polygon, so do not keep searching
-                    }
-                }
-
-                // If there was no Polygon found for this Loop to divide, there must have been an error
-                if (cutPolygon == null)
-                {
-                    // Debug bad intersections
-                    /*
-                    foreach(Edge broken in loop.GetEdges())
-                    {
-                        Debug.DrawLine(broken.P0, broken.P1, Color.cyan, 10000);
-                    }
-                    Debug.Log("Testing Distance to Edges");
-                    foreach(Loop poly in polys)
-                    {
-                        Debug.Log("Polygon Start");
-                        float smallestStart = (float)int.MaxValue;
-                        float smallestEnd = (float)int.MaxValue;
-                        foreach (Edge bad in poly.GetEdges())
-                        {
-                            float startDistance = Vector3.Cross(bad.P1 - bad.P0, bad.P0 - loopStart).magnitude / (bad.P1 - bad.P0).magnitude;
-                            float endDistance = Vector3.Cross(bad.P1 - bad.P0, bad.P0 - loopEnd).magnitude / (bad.P1 - bad.P0).magnitude;
-
-                            if (startDistance < smallestStart)
-                            {
-                                smallestStart = startDistance;
-                            }
-
-                            if (endDistance < smallestEnd)
-                            {
-                                smallestEnd = endDistance;
-                            }
-                        }
-                        Debug.Log($"Smallest Distance to Start: {smallestStart}, End: {smallestEnd}");
-                        Debug.Log("Polygon End");
-                    }
-                    */
-                    Debug.Log("Error: No Polygon within the Triangle found to split by this Edge Loop");
-                    continue;
-                }
-
-                // Split the Polygon in two based on the Loop
-                // Split intersected Edges in 2 based on Endpoint location
-                List<Edge> oldEdges = cutPolygon.GetEdges(); // Ordered list of Edges in the Polygon, but modifiable
-                //int polyIndex = polys.IndexOf(cutPolygon);
-                //polys.RemoveAt(polyIndex);
-                polys.Remove(cutPolygon);
-
-                int startSplitIndex = oldEdges.IndexOf(loopEdges[0]);
-                if (loopStart != loopEdges[0].P0 && loopStart != loopEdges[0].P1)
-                {
-                    Edge e1 = new Edge(), e2 = new Edge();
-                    e1.P0 = loopEdges[0].P0;
-                    e1.P1 = loopStart;
-                    e2.P0 = loopStart;
-                    e2.P1 = loopEdges[0].P1;
-                    oldEdges.RemoveAt(startSplitIndex);
-                    oldEdges.Insert(startSplitIndex, e1);
-                    oldEdges.Insert(startSplitIndex + 1, e2);
-                }
-
-                // Before splitting the second Edge it must be checked that both endpoints are not on the same Edge
-                // If they are, then the second endpoint must be on one of the newly added Edges instead
-                if (loopEdges[0] == loopEdges[1])
-                {
-                    if (oldEdges[startSplitIndex].IsPointOnEdge(loopEnd))
-                    {
-                        loopEdges[1] = oldEdges[startSplitIndex];
-                    }
-                    else if (oldEdges[startSplitIndex + 1].IsPointOnEdge(loopEnd))
-                    {
-                        loopEdges[1] = oldEdges[startSplitIndex + 1];
-                    }
-                    else
-                    {
-                        Debug.Log("What happened here?");
-                    }
-                }
-
-                int endSplitIndex = oldEdges.IndexOf(loopEdges[1]); // Must be recorded after Start additions
-                if (loopEnd != loopEdges[1].P0 && loopEnd != loopEdges[1].P1)
-                {
-                    Edge e1 = new Edge(), e2 = new Edge();
-                    e1.P0 = loopEdges[1].P0;
-                    e1.P1 = loopEnd;
-                    e2.P0 = loopEnd;
-                    e2.P1 = loopEdges[1].P1;
-                    oldEdges.RemoveAt(endSplitIndex);
-                    oldEdges.Insert(endSplitIndex, e1);
-                    oldEdges.Insert(endSplitIndex + 1, e2);
-                }
-
-                // Form 2 New Polygons
-                // Utilizing the loopStart Vertex, we know that it has 2 Edges with it as P0. These are
-                // the first Edge in the split Loop and oldEdges[startSplitIndex+1]. The polygons are thus
-                // those formed by proceeding around the Edges beginning with each of these Edges. While
-                // loopStart is P0 to 2 Edges, loopEnd is P0 only to 1, by virtue of the loop being Open,
-                // and we know this is the Edge at oldEdges[endSplitIndex+1]
-                Loop poly1 = new Loop(), poly2 = new Loop();
-
-                // Form Poly1
-                // startSplitIndex+1 may no longer be accurate if the end of the Loop was on the same
-                // original Edge. This is sub-optimal, but just search for the non-loop Edge that starts
-                // at the start of the Loop
-                foreach(Edge e in oldEdges)
-                {
-                    if (e.P0 == loopStart)
-                    {
-                        poly1.AddEdge(e);
-                        break;
-                    }
-                }
-                // Until the Polygon is closed (has reached original point), add Edges
-                while (!poly1.Closed())
-                {
-                    Vector3 lastPoint = new Vector3();
-                    poly1.LastPoint(ref lastPoint);
-
-                    // If we have reached the end of the Loop, add the Loop in reverse
-                    // Afterwards poly1 should be closed and the loop should break
-                    if (lastPoint == loopEnd)
-                    {
-                        for(int i = loop.GetEdges().Count-1; i >= 0; i--)
-                        {
-                            if (!poly1.AddEdge(loop.GetEdges()[i].Inverted()))
-                            {
-                                Debug.Log("Error: Polygon Creation");
-                            }
-                        }
-
-                        // Error report
-                        if (!poly1.Closed()) Debug.Log("Error: Polygon 1 failed to Close");
-                    }
-                    else // Add the next Edge in the List, which should work since it is already sorted
-                    {
-                        Edge edge = null;
-                        // Horribly inefficient. Optimizing by utilizing the sorted nature of oldEdges causes unknown errors
-                        foreach (Edge e in oldEdges)
-                        {
-                            if (e.P0 == lastPoint)
-                            {
-                                edge = e;
-                                break; // Early escape
-                            }
-                        }
-                        // If an Edge cannot be added, there is an error. Break from the loop to avoid infinite
-                        if (edge == null || !poly1.AddEdge(edge))
-                        {
-                            Debug.Log("Error: Polygon Creation");
-                            break;
-                        }
-                    }
-                }
-                polys.Add(poly1);
-
-                // Form Poly2
-                // Start by adding the Loop to this poly
-                foreach (Edge e in loop.GetEdges())
-                {
-                    poly2.AddEdge(e);
-                }
-                // Until the Loop is closed, add Edges from the Old Polygon
-                while (!poly2.Closed())
-                {
-                    Edge edge = null;
-                    Vector3 lastPoint = new Vector3();
-                    poly2.LastPoint(ref lastPoint);
-                    foreach (Edge e in oldEdges)
-                    {
-                        if (e.P0 == lastPoint)
-                        {
-                            edge = e;
-                            break;
-                        }
-                    }
-                    // Check for errors in finding or adding
-                    if (edge == null || !poly2.AddEdge(edge))
-                    {
-                        Debug.Log("Error: Polygon Creation");
-                        break; // Escape infinite loop
-                    }
-                }
-                polys.Add(poly2);
-            }
-
-            // Display results for intermediate testing - TODO: REMOVE
-            //foreach (Loop polygon in polys)
-            //{
-            //    Color c = new Color(UnityEngine.Random.Range(0f, 1f), UnityEngine.Random.Range(0f, 1f), UnityEngine.Random.Range(0f, 1f));
-            //    foreach (Edge e in polygon.GetEdges())
-            //    {
-            //        Debug.DrawLine(e.P0, e.P1, c, 10000);
-            //    }
-            //}
-
-            // Perform Triangulation
-            List<Triangle> tris = new List<Triangle>();
-            foreach (Loop poly in polys)
-            {
-                List<Edge> polyEdges = poly.GetEdges();
-                // Failsafe
-                if (polyEdges.Count < 3)
-                {
-                    Debug.Log("Polygon with < 3 Edges found...what?");
-                    continue;
-                }
-
-                // If it only has 3 Edges then no need to Triangulate further
-                if (polyEdges.Count == 3)
-                {
-                    Triangle t = new Triangle();
-                    Vertex v0 = new Vertex(), v1 = new Vertex(), v2 = new Vertex();
-                    v0.Position = polyEdges[0].P0; 
-                    v1.Position = polyEdges[1].P0;
-                    v2.Position = polyEdges[2].P0;
-
-                    // Ignore Normal, Tangent, and UV
-                    t.V0 = v0;
-                    t.V1 = v1;
-                    t.V2 = v2;
-                    tris.Add(t);
-                    continue;
-                }
-
-                // Perform Ear-Clipping algorithm (David Eberly, 2002)
-                // First step is to establish a list of all Vertices
-                List<Vector3> polyVertices = new List<Vector3>();
-                foreach (Edge e in polyEdges)
-                {
-                    polyVertices.Add(e.P0); // Every vertex is P0 exactly once
-                }
-
-                // Determine Direction of the Polygon - requires Cross product of 3 Vertices on Convex Hull.
-                // This is needed to determine if vertices are reflex or convex
-                // Finding the lowest-x Vertex means it must be on the Convex Hull (and its neighbors, since
-                // it cannot be locally concave)
-                int smallestXIndex = 0; // Start by assuming at index 0
-                for (int i = 1; i < polyVertices.Count; i++)
-                {
-                    if (polyVertices[i].x < polyVertices[smallestXIndex].x) smallestXIndex = i;
-                }
-                Vector3 convexPoint = polyVertices[smallestXIndex];
-                Vector3 prev = (smallestXIndex == 0) ? polyVertices[polyVertices.Count - 1] : polyVertices[smallestXIndex - 1]; // Cyclic behavior
-                Vector3 next = (smallestXIndex == polyVertices.Count - 1) ? polyVertices[0] : polyVertices[smallestXIndex + 1]; // Cyclic behavior
-
-                Vector3 polyDirection = Vector3.Normalize(Vector3.Cross(convexPoint - prev, next - convexPoint));
-
-                // Construct list of reflex Vertices and Ears
-                List<Vector3> reflexVertices = new List<Vector3>(), ears = new List<Vector3>();
-                for (int i = 0; i < polyVertices.Count; i++) // Reflex Vertices
-                {
-                    // Determine this, next, and prev vertices using the List as a cycle
-                    Vector3 vert = polyVertices[i];
-                    prev = (i == 0) ? polyVertices[polyVertices.Count - 1] : polyVertices[i - 1];
-                    next = (i == polyVertices.Count - 1) ? polyVertices[0] : polyVertices[i + 1];
-
-                    Vector3 vertDirection = Vector3.Normalize(Vector3.Cross(vert - prev, next - vert));
-                    if (vertDirection == -polyDirection) // Opposite normal, so Reflex
-                    {
-                        reflexVertices.Add(vert);
-                    }
-                }
-                for (int i = 0; i < polyVertices.Count; i++) // Ears
-                {
-                    Vector3 vert = polyVertices[i];
-                    if (reflexVertices.Contains(vert)) continue; // Reflex cannot be Ear
-
-                    // Next and Last Vertices for forming the Triangle
-                    prev = (i == 0) ? polyVertices[polyVertices.Count - 1] : polyVertices[i - 1];
-                    next = (i == polyVertices.Count - 1) ? polyVertices[0] : polyVertices[i + 1];
-
-                    bool bIsEar = true;
-
-                    // Use Barycentric coordinates for determining if a point is within the Triangle defined
-                    // by the 3 points. Uses method from pages 2 and 3 of
-                    // https://ceng2.ktu.edu.tr/~cakir/files/grafikler/Texture_Mapping.pdf
-                    Vector3 v0 = prev - vert, v1 = next - vert;
-                    float d00 = Vector3.Dot(v0, v0);
-                    float d01 = Vector3.Dot(v0, v1);
-                    float d11 = Vector3.Dot(v1, v1);
-                    float denom = d00 * d11 - d01 * d01;
-                    foreach (Vector3 reflex in reflexVertices)
-                    {
-                        Vector3 v2 = reflex - vert;
-                        float d20 = Vector3.Dot(v2, v0);
-                        float d21 = Vector3.Dot(v2, v1);
-
-                        float bv = (d11 * d20 - d01 * d21) / denom;
-                        float bw = (d00 * d21 - d01 * d20) / denom;
-                        float bu = 1.0f - bv - bw;
-
-                        // If the point is inside the Triangle, it is not an Ear
-                        if (bv <= 1.0f && bv >= 0.0f
-                            && bw <= 1.0f && bw >= 0.0f
-                            && bu <= 1.0f && bu >= 0.0f
-                            && bv + bw + bu == 1.0f)
-                        {
-                            bIsEar = false;
-                            break;
-                        }
-                    }
-
-                    // If no reflex Vertices were within the Triangle, it is an Ear
-                    if (bIsEar) ears.Add(vert);
-                }
-
-                // Remove Ears until there are no Ears to remove
-                while (ears.Count > 2)
-                {
-                    // Take first Ear in the list
-                    Vector3 vert = ears[0];
-                    int earIndex = polyVertices.IndexOf(vert);
-                    prev = (earIndex == 0) ? polyVertices[polyVertices.Count - 1] : polyVertices[earIndex - 1];
-                    next = (earIndex == polyVertices.Count - 1) ? polyVertices[0] : polyVertices[earIndex + 1];
-
-                    // Create and add Triangle to output
-                    Vertex triV0 = new Vertex(), triV1 = new Vertex(), triV2 = new Vertex();
-                    triV0.Position = prev;
-                    triV1.Position = vert;
-                    triV2.Position = next;
-                    Triangle tri = new Triangle();
-                    tri.V0 = triV0;
-                    tri.V1 = triV1;
-                    tri.V2 = triV2;
-                    tris.Add(tri);
-
-                    // Adjust neighboring Vertices
-                    polyVertices.Remove(vert); // Can no longer affect neighbors, will affect indices
-                    ears.Remove(vert);
-                    int prevIndex = polyVertices.IndexOf(prev);
-                    int nextIndex = polyVertices.IndexOf(next);
-
-                    // Previous
-                    vert = prev;
-                    prev = (prevIndex == 0) ? polyVertices[polyVertices.Count - 1] : polyVertices[prevIndex - 1];
-                    // next does not change
-                    
-                    // If this vertex was reflex, check if it still is
-                    if (reflexVertices.Contains(vert))
-                    {
-                        Vector3 vertDirection = Vector3.Normalize(Vector3.Cross(vert - prev, next - vert));
-                        if (vertDirection == polyDirection) // Same normal, so no longer reflex
-                        {
-                            reflexVertices.Remove(vert);
-                        }
-                    }
-                    // If the vertex is now not reflex, check if it is an Ear. If it is not now, and was, remove it
-                    if (!reflexVertices.Contains(vert))
-                    {
-                        bool bIsEar = true;
-
-                        // Use Barycentric coordinates for determining if a point is within the Triangle defined
-                        // by the 3 points. Uses method from pages 2 and 3 of
-                        // https://ceng2.ktu.edu.tr/~cakir/files/grafikler/Texture_Mapping.pdf
-                        Vector3 v0 = prev - vert, v1 = next - vert;
-                        float d00 = Vector3.Dot(v0, v0);
-                        float d01 = Vector3.Dot(v0, v1);
-                        float d11 = Vector3.Dot(v1, v1);
-                        float denom = d00 * d11 - d01 * d01;
-                        foreach (Vector3 reflex in reflexVertices)
-                        {
-                            Vector3 v2 = reflex - vert;
-                            float d20 = Vector3.Dot(v2, v0);
-                            float d21 = Vector3.Dot(v2, v1);
-
-                            float bv = (d11 * d20 - d01 * d21) / denom;
-                            float bw = (d00 * d21 - d01 * d20) / denom;
-                            float bu = 1.0f - bv - bw;
-
-                            // If the point is inside the Triangle, it is not an Ear
-                            if (bv <= 1.0f && bv >= 0.0f
-                                && bw <= 1.0f && bw >= 0.0f
-                                && bu <= 1.0f && bu >= 0.0f
-                                && bv + bw + bu == 1.0f)
-                            {
-                                bIsEar = false;
-                                break;
-                            }
-                        }
-
-                        bool bWasEar = ears.Contains(vert);
-                        if (bWasEar && !bIsEar) ears.Remove(vert);
-                        else if (!bWasEar && bIsEar) ears.Add(vert);
-                        // If it was and still is, do nothing
-                    }
-
-                    // Next
-                    prev = vert; // next is now next of original previous
-                    vert = next; // Unchanged during Previous calculation
-                    next = (nextIndex == polyVertices.Count - 1) ? polyVertices[0] : polyVertices[nextIndex + 1];
-
-                    // If this vertex was reflex, check if it still is
-                    if (reflexVertices.Contains(vert))
-                    {
-                        Vector3 vertDirection = Vector3.Normalize(Vector3.Cross(vert - prev, next - vert));
-                        if (vertDirection == polyDirection) // Same normal, so no longer reflex
-                        {
-                            reflexVertices.Remove(vert);
-                        }
-                    }
-                    // If the vertex is now not reflex, check if it is an Ear. If it is not now, and was, remove it
-                    if (!reflexVertices.Contains(vert))
-                    {
-                        bool bIsEar = true;
-
-                        // Use Barycentric coordinates for determining if a point is within the Triangle defined
-                        // by the 3 points. Uses method from pages 2 and 3 of
-                        // https://ceng2.ktu.edu.tr/~cakir/files/grafikler/Texture_Mapping.pdf
-                        Vector3 v0 = prev - vert, v1 = next - vert;
-                        float d00 = Vector3.Dot(v0, v0);
-                        float d01 = Vector3.Dot(v0, v1);
-                        float d11 = Vector3.Dot(v1, v1);
-                        float denom = d00 * d11 - d01 * d01;
-                        foreach (Vector3 reflex in reflexVertices)
-                        {
-                            Vector3 v2 = reflex - vert;
-                            float d20 = Vector3.Dot(v2, v0);
-                            float d21 = Vector3.Dot(v2, v1);
-
-                            float bv = (d11 * d20 - d01 * d21) / denom;
-                            float bw = (d00 * d21 - d01 * d20) / denom;
-                            float bu = 1.0f - bv - bw;
-
-                            // If the point is inside the Triangle, it is not an Ear
-                            if (bv <= 1.0f && bv >= 0.0f
-                                && bw <= 1.0f && bw >= 0.0f
-                                && bu <= 1.0f && bu >= 0.0f
-                                && bv + bw + bu == 1.0f)
-                            {
-                                bIsEar = false;
-                                break;
-                            }
-                        }
-
-                        bool bWasEar = ears.Contains(vert);
-                        if (bWasEar && !bIsEar) ears.Remove(vert);
-                        else if (!bWasEar && bIsEar) ears.Add(vert);
-                        // If it was and still is, do nothing
-                    }
-                }
-            }
-
-            return tris;
-        };
-
         // Foreach Dictionary entry, form Edge Loops and Triangulate. If a point on an Edge does not
         // have a corresponding point in another Edge, then it is on one of the 3 original Tri edges
         foreach (var pair in triIntersectionEdges) // Key is the Triangle, Value is the list of intersecting Edges
@@ -1463,8 +947,56 @@ public class Striker : MonoBehaviour
             }
 
             if (intersectionLoops.Count == 0) continue; // Do not retriangulate if no Loops are found
-            List<Triangle> triangulation = Triangulate(pair.Key, intersectionLoops);
 
+            // Post-process every Edge Loop to join all subsequent Edges in a straight line into 1
+            //  - TODO: FIX: There is currently an error with this, causing 1 loop in the test setup to devolve into
+            //    2 Edges - one Edge and then its inverse version (which is WEIRD)
+            //List<Loop> processedIntersectionLoops = new List<Loop>();
+            //foreach (Loop loop in intersectionLoops)
+            //{
+            //    // Save and remove this Loop, as it will be fully updated
+            //    List<Edge> loopEdges = loop.GetEdges();
+            //
+            //    // Go through all Edges, joining on DotProduct 0
+            //    for (int i = 0; i < loopEdges.Count-1; i++)
+            //    {
+            //        Vector3 v1 = (loopEdges[i].P1 - loopEdges[i].P0).normalized;
+            //        Vector3 v2 = (loopEdges[i + 1].P1 - loopEdges[i + 1].P0).normalized;
+            //
+            //        if (v1 == v2) //Same direction
+            //        {
+            //            Edge e = new Edge();
+            //            e.P0 = loopEdges[i].P0;
+            //            e.P1 = loopEdges[i + 1].P1;
+            //
+            //            // Remove this and the next edge, and insert the new one
+            //            loopEdges.RemoveAt(i);
+            //            loopEdges.RemoveAt(i);
+            //            loopEdges.Insert(i, e);
+            //            i--; // Repeat this index with the new, joined Edge
+            //        }
+            //    }
+            //
+            //    // Make new, processed Loop
+            //    Loop processedLoop = new Loop();
+            //    foreach (Edge e in loopEdges)
+            //    {
+            //        processedLoop.AddEdge(e);
+            //    }
+            //    processedIntersectionLoops.Add(processedLoop);
+            //}
+            //intersectionLoops = processedIntersectionLoops;
+
+            List<Triangle> triangulation = Triangulate(pair.Key, intersectionLoops); // Perform Triangulation based on calculated Edge Loops
+
+            // Test Triangulation visualization
+            //foreach (Loop l in intersectionLoops)
+            //{
+            //    foreach (Edge e in l.GetEdges())
+            //    {
+            //        Debug.DrawLine(e.P0, e.P1, Color.magenta, 10000);
+            //    }
+            //}
             foreach (Triangle t in triangulation)
             {
                 Color c = new Color(UnityEngine.Random.Range(0f, 1f), UnityEngine.Random.Range(0f, 1f), UnityEngine.Random.Range(0f, 1f));
@@ -1472,9 +1004,572 @@ public class Striker : MonoBehaviour
                 Debug.DrawLine(t.V1.Position, t.V2.Position, c, 10000);
                 Debug.DrawLine(t.V2.Position, t.V0.Position, c, 10000);
             }
-        }
+        
+            // Replace pair.Key with the triangulation
+            if (core.Triangles.Contains(pair.Key))
+            {
+                core.Triangles.Remove(pair.Key);
+                foreach (Triangle t in triangulation)
+                {
+                    core.Triangles.Add(t);
+                }
+            }
+            else if (clip.Triangles.Contains(pair.Key))
+            {
+                clip.Triangles.Remove(pair.Key);
+                foreach (Triangle t in triangulation)
+                {
+                    clip.Triangles.Add(t);
+                }
+            }
+            else
+            {
+                Debug.Log("Error. Triangle to replace was not part of either mesh");
+            }
+        } // Triangle replacement complete
+
+        // Step 3/4 - Merge and Update, form intersection Loops
+
+        // Replace meshes
+        coneMeshFilter.mesh = clip.Extract(transform);
+        coreModel.GetComponent<MeshFilter>().mesh = core.Extract(coreModel.transform);
     }
 
+    /****************************************** Algorithm Helper Functions *************************************/
+
+    // FracturePolygon takes a single polygon represented by an Edge Loop, as well as several Loops presumed
+    // to begin and end on Edges of the initial polygon. It then computes a list of polygons created by splintering
+    // the original polygon into several
+    List<Loop> FracturePolygon(Loop a_poly, List<Loop> a_innerLoops)
+    {
+        List<Loop> polys = new List<Loop>();
+        polys.Add(a_poly); // Initial state
+
+        // Iteratively remove Loops
+        foreach (Loop loop in a_innerLoops)
+        {
+            // If the Loop is closed it is located within one of the final Polygons, and severly complicates
+            // Triangulation, but should not happen with well-formed meshes
+            //  - In some error cases (likely floating point math), a Loop of 1 Edge with identical points
+            //    will be found. This is culled before adding to the Triangle's intersection list
+            if (loop.Closed())
+            {
+                Debug.Log($"Closed Loop Intersection Found - Edge Count: {loop.GetEdges().Count}");
+                continue; // Closed Loops involve fractionation and are not supported
+            }
+
+            // Get Endpoints of the Loop
+            Vector3 loopStart = new Vector3(), loopEnd = new Vector3();
+            if (!loop.FirstPoint(ref loopStart) || !loop.LastPoint(ref loopEnd))
+            {
+                Debug.Log("Loop does not exist?");
+                continue;
+            }
+
+            Loop cutPolygon = null; // Polygon that this Loop will cut
+            Edge[] loopEdges = new Edge[2]; // Edges of the intersected Polygon.
+                                            // Index 0 is the starting Edge, Index 1 is the ending Edge
+
+            // Find the Polygon in the Triangle to be split in 2 by this Loop
+            foreach (Loop poly in polys)
+            {
+                // Reset loopEdge records, to this polygon
+                loopEdges[0] = null; loopEdges[1] = null;
+
+                // Test to find Edges that hold the ends of the Loop
+                foreach (Edge polyEdge in poly.GetEdges())
+                {
+                    // Check each endpoint separately, but they may be on the same Edge
+                    if (polyEdge.IsPointOnEdge(loopStart))
+                    {
+                        loopEdges[0] = polyEdge;
+                    }
+                    if (polyEdge.IsPointOnEdge(loopEnd))
+                    {
+                        loopEdges[1] = polyEdge;
+                    }
+
+                    // Cut out early if both Edges are found
+                    if (loopEdges[0] != null && loopEdges[1] != null) break;
+                }
+
+                // If both endpoints are on this Polygon, this one will be split by the Loop
+                //  - With well-formed meshes, the only possible Polygon Edges that should have
+                //    both endpoints are Edges stemming from the original Triangle, so the found
+                //    polygon will have no duplicate on the opposite side of the Edge ------------- TODO: True?
+                if (loopEdges[0] != null && loopEdges[1] != null)
+                {
+                    cutPolygon = poly;
+                    break; // The Loop cannot split more than one polygon, so do not keep searching
+                }
+            }
+
+            // If there was no Polygon found for this Loop to divide, there must have been an error
+            if (cutPolygon == null)
+            {
+                // Debug bad intersections
+                /*
+                foreach(Edge broken in loop.GetEdges())
+                {
+                    Debug.DrawLine(broken.P0, broken.P1, Color.cyan, 10000);
+                }
+                Debug.Log("Testing Distance to Edges");
+                foreach(Loop poly in polys)
+                {
+                    Debug.Log("Polygon Start");
+                    float smallestStart = (float)int.MaxValue;
+                    float smallestEnd = (float)int.MaxValue;
+                    foreach (Edge bad in poly.GetEdges())
+                    {
+                        float startDistance = Vector3.Cross(bad.P1 - bad.P0, bad.P0 - loopStart).magnitude / (bad.P1 - bad.P0).magnitude;
+                        float endDistance = Vector3.Cross(bad.P1 - bad.P0, bad.P0 - loopEnd).magnitude / (bad.P1 - bad.P0).magnitude;
+
+                        if (startDistance < smallestStart)
+                        {
+                            smallestStart = startDistance;
+                        }
+
+                        if (endDistance < smallestEnd)
+                        {
+                            smallestEnd = endDistance;
+                        }
+                    }
+                    Debug.Log($"Smallest Distance to Start: {smallestStart}, End: {smallestEnd}");
+                    Debug.Log("Polygon End");
+                }
+                */
+                Debug.Log("Error: No Polygon within the Triangle found to split by this Edge Loop");
+                continue;
+            }
+
+            // Split the Polygon in two based on the Loop
+            // Split intersected Edges in 2 based on Endpoint location
+            List<Edge> oldEdges = cutPolygon.GetEdges(); // Ordered list of Edges in the Polygon, but modifiable
+                                                         //int polyIndex = polys.IndexOf(cutPolygon);
+                                                         //polys.RemoveAt(polyIndex);
+            polys.Remove(cutPolygon);
+
+            int startSplitIndex = oldEdges.IndexOf(loopEdges[0]);
+            if (loopStart != loopEdges[0].P0 && loopStart != loopEdges[0].P1)
+            {
+                Edge e1 = new Edge(), e2 = new Edge();
+                e1.P0 = loopEdges[0].P0;
+                e1.P1 = loopStart;
+                e2.P0 = loopStart;
+                e2.P1 = loopEdges[0].P1;
+                oldEdges.RemoveAt(startSplitIndex);
+                oldEdges.Insert(startSplitIndex, e1);
+                oldEdges.Insert(startSplitIndex + 1, e2);
+            }
+
+            // Before splitting the second Edge it must be checked that both endpoints are not on the same Edge
+            // If they are, then the second endpoint must be on one of the newly added Edges instead
+            if (loopEdges[0] == loopEdges[1])
+            {
+                if (oldEdges[startSplitIndex].IsPointOnEdge(loopEnd))
+                {
+                    loopEdges[1] = oldEdges[startSplitIndex];
+                }
+                else if (oldEdges[startSplitIndex + 1].IsPointOnEdge(loopEnd))
+                {
+                    loopEdges[1] = oldEdges[startSplitIndex + 1];
+                }
+                else
+                {
+                    Debug.Log("What happened here?");
+                }
+            }
+
+            int endSplitIndex = oldEdges.IndexOf(loopEdges[1]); // Must be recorded after Start additions
+            if (loopEnd != loopEdges[1].P0 && loopEnd != loopEdges[1].P1)
+            {
+                Edge e1 = new Edge(), e2 = new Edge();
+                e1.P0 = loopEdges[1].P0;
+                e1.P1 = loopEnd;
+                e2.P0 = loopEnd;
+                e2.P1 = loopEdges[1].P1;
+                oldEdges.RemoveAt(endSplitIndex);
+                oldEdges.Insert(endSplitIndex, e1);
+                oldEdges.Insert(endSplitIndex + 1, e2);
+            }
+
+            // Form 2 New Polygons
+            // Utilizing the loopStart Vertex, we know that it has 2 Edges with it as P0. These are
+            // the first Edge in the split Loop and oldEdges[startSplitIndex+1]. The polygons are thus
+            // those formed by proceeding around the Edges beginning with each of these Edges. While
+            // loopStart is P0 to 2 Edges, loopEnd is P0 only to 1, by virtue of the loop being Open,
+            // and we know this is the Edge at oldEdges[endSplitIndex+1]
+            Loop poly1 = new Loop(), poly2 = new Loop();
+
+            // Form Poly1
+            // startSplitIndex+1 may no longer be accurate if the end of the Loop was on the same
+            // original Edge. This is sub-optimal, but just search for the non-loop Edge that starts
+            // at the start of the Loop
+            foreach (Edge e in oldEdges)
+            {
+                if (e.P0 == loopStart)
+                {
+                    poly1.AddEdge(e);
+                    break;
+                }
+            }
+            // Until the Polygon is closed (has reached original point), add Edges
+            while (!poly1.Closed())
+            {
+                Vector3 lastPoint = new Vector3();
+                poly1.LastPoint(ref lastPoint);
+
+                // If we have reached the end of the Loop, add the Loop in reverse
+                // Afterwards poly1 should be closed and the loop should break
+                if (lastPoint == loopEnd)
+                {
+                    for (int i = loop.GetEdges().Count - 1; i >= 0; i--)
+                    {
+                        if (!poly1.AddEdge(loop.GetEdges()[i].Inverted()))
+                        {
+                            Debug.Log("Error: Polygon Creation");
+                        }
+                    }
+
+                    // Error report
+                    if (!poly1.Closed()) Debug.Log("Error: Polygon 1 failed to Close");
+                }
+                else // Add the next Edge in the List, which should work since it is already sorted
+                {
+                    Edge edge = null;
+                    // Horribly inefficient. Optimizing by utilizing the sorted nature of oldEdges causes unknown errors
+                    foreach (Edge e in oldEdges)
+                    {
+                        if (e.P0 == lastPoint)
+                        {
+                            edge = e;
+                            break; // Early escape
+                        }
+                    }
+                    // If an Edge cannot be added, there is an error. Break from the loop to avoid infinite
+                    if (edge == null || !poly1.AddEdge(edge))
+                    {
+                        Debug.Log("Error: Polygon Creation");
+                        break;
+                    }
+                }
+            }
+            polys.Add(poly1);
+
+            // Form Poly2
+            // Start by adding the Loop to this poly
+            foreach (Edge e in loop.GetEdges())
+            {
+                poly2.AddEdge(e);
+            }
+            // Until the Loop is closed, add Edges from the Old Polygon
+            while (!poly2.Closed())
+            {
+                Edge edge = null;
+                Vector3 lastPoint = new Vector3();
+                poly2.LastPoint(ref lastPoint);
+                foreach (Edge e in oldEdges)
+                {
+                    if (e.P0 == lastPoint)
+                    {
+                        edge = e;
+                        break;
+                    }
+                }
+                // Check for errors in finding or adding
+                if (edge == null || !poly2.AddEdge(edge))
+                {
+                    Debug.Log("Error: Polygon Creation");
+                    break; // Escape infinite loop
+                }
+            }
+            polys.Add(poly2);
+        }
+
+        return polys;
+    }
+
+    // Triangulate takes a Triangle and a series of Edge Loops within that Triangle, splinters that Triangle into Polygons,
+    // and Triangulates those Polygons. The output is a list of all new Triangles that will replace the origin Triangle
+    List<Triangle> Triangulate(Triangle a_origin, List<Loop> a_intersections)
+    {
+        Loop initialTri = new Loop();
+        // Create initial Triangle polygon. Local braces added to avoid recording of variables
+        {
+            Edge e = new Edge();
+            e.P0 = a_origin.V0.Position;
+            e.P1 = a_origin.V1.Position;
+            initialTri.AddEdge(e);
+            initialTri.AddPoint(a_origin.V2.Position);
+            initialTri.AddPoint(a_origin.V0.Position); // Close Polygon
+        }
+        List<Loop> polys = FracturePolygon(initialTri, a_intersections);
+
+        // Display results for intermediate testing - TODO: REMOVE
+        //foreach (Loop polygon in polys)
+        //{
+        //    Color c = new Color(UnityEngine.Random.Range(0f, 1f), UnityEngine.Random.Range(0f, 1f), UnityEngine.Random.Range(0f, 1f));
+        //    foreach (Edge e in polygon.GetEdges())
+        //    {
+        //        Debug.DrawLine(e.P0, e.P1, Color.cyan, 10000);
+        //    }
+        //}
+
+        // Perform Triangulation via EarClipping for each sub-polygon found
+        List<Triangle> tris = new List<Triangle>();
+        foreach (Loop poly in polys)
+        {
+            List<Edge> polyEdges = poly.GetEdges();
+            // Failsafe
+            if (polyEdges.Count < 3)
+            {
+                Debug.Log("Polygon with < 3 Edges found...what?");
+                foreach (Edge e in polyEdges)
+                {
+                    Debug.DrawLine(e.P0, e.P1, Color.red, 10000);
+                }
+                continue;
+            }
+
+            // If it only has 3 Edges then no need to Triangulate further
+            if (polyEdges.Count == 3)
+            {
+                Triangle t = new Triangle();
+                Vertex v0 = new Vertex(), v1 = new Vertex(), v2 = new Vertex();
+                v0.Position = polyEdges[0].P0;
+                v1.Position = polyEdges[1].P0;
+                v2.Position = polyEdges[2].P0;
+
+                // Ignore Normal, Tangent, and UV
+                t.V0 = v0;
+                t.V1 = v1;
+                t.V2 = v2;
+                tris.Add(t);
+                continue;
+            }
+
+            // Perform Ear-Clipping algorithm (David Eberly, 2002)
+            // First step is to establish a list of all Vertices
+            List<Vector3> polyVertices = new List<Vector3>();
+            foreach (Edge e in polyEdges)
+            {
+                polyVertices.Add(e.P0); // Every vertex is P0 exactly once
+            }
+
+            // Determine Direction of the Polygon - requires Cross product of 3 Vertices on Convex Hull.
+            // This is needed to determine if vertices are reflex or convex
+            // Finding the lowest-x Vertex means it must be on the Convex Hull (and its neighbors, since
+            // it cannot be locally concave)
+            int smallestXIndex = 0; // Start by assuming at index 0
+            for (int i = 1; i < polyVertices.Count; i++)
+            {
+                if (polyVertices[i].x < polyVertices[smallestXIndex].x) smallestXIndex = i;
+            }
+            Vector3 convexPoint = polyVertices[smallestXIndex];
+            Vector3 prev = (smallestXIndex == 0) ? polyVertices[polyVertices.Count - 1] : polyVertices[smallestXIndex - 1]; // Cyclic behavior
+            Vector3 next = (smallestXIndex == polyVertices.Count - 1) ? polyVertices[0] : polyVertices[smallestXIndex + 1]; // Cyclic behavior
+
+            Vector3 polyDirection = Vector3.Normalize(Vector3.Cross(convexPoint - prev, next - convexPoint));
+
+            // Construct list of reflex Vertices and Ears
+            List<Vector3> reflexVertices = new List<Vector3>(), ears = new List<Vector3>();
+            for (int i = 0; i < polyVertices.Count; i++) // Reflex Vertices
+            {
+                // Determine this, next, and prev vertices using the List as a cycle
+                Vector3 vert = polyVertices[i];
+                prev = (i == 0) ? polyVertices[polyVertices.Count - 1] : polyVertices[i - 1];
+                next = (i == polyVertices.Count - 1) ? polyVertices[0] : polyVertices[i + 1];
+
+                Vector3 vertDirection = Vector3.Normalize(Vector3.Cross(vert - prev, next - vert));
+                if (vertDirection == -polyDirection) // Opposite normal, so Reflex
+                {
+                    reflexVertices.Add(vert);
+                }
+            }
+            for (int i = 0; i < polyVertices.Count; i++) // Ears
+            {
+                Vector3 vert = polyVertices[i];
+                if (reflexVertices.Contains(vert)) continue; // Reflex cannot be Ear
+
+                // Next and Last Vertices for forming the Triangle
+                prev = (i == 0) ? polyVertices[polyVertices.Count - 1] : polyVertices[i - 1];
+                next = (i == polyVertices.Count - 1) ? polyVertices[0] : polyVertices[i + 1];
+
+                bool bIsEar = true;
+
+                // Use Barycentric coordinates for determining if a point is within the Triangle defined
+                // by the 3 points. Uses method from pages 2 and 3 of
+                // https://ceng2.ktu.edu.tr/~cakir/files/grafikler/Texture_Mapping.pdf
+                Vector3 v0 = prev - vert, v1 = next - vert;
+                float d00 = Vector3.Dot(v0, v0);
+                float d01 = Vector3.Dot(v0, v1);
+                float d11 = Vector3.Dot(v1, v1);
+                float denom = d00 * d11 - d01 * d01;
+                foreach (Vector3 reflex in reflexVertices)
+                {
+                    Vector3 v2 = reflex - vert;
+                    float d20 = Vector3.Dot(v2, v0);
+                    float d21 = Vector3.Dot(v2, v1);
+
+                    float bv = (d11 * d20 - d01 * d21) / denom;
+                    float bw = (d00 * d21 - d01 * d20) / denom;
+                    float bu = 1.0f - bv - bw;
+
+                    // If the point is inside the Triangle, it is not an Ear
+                    if (bv <= 1.0f && bv >= 0.0f
+                        && bw <= 1.0f && bw >= 0.0f
+                        && bu <= 1.0f && bu >= 0.0f
+                        && bv + bw + bu == 1.0f)
+                    {
+                        bIsEar = false;
+                        break;
+                    }
+                }
+
+                // If no reflex Vertices were within the Triangle, it is an Ear
+                if (bIsEar) ears.Add(vert);
+            }
+
+            // Remove Ears until there are no Ears to remove
+            while (ears.Count > 2)
+            {
+                // Take first Ear in the list
+                Vector3 vert = ears[0];
+                int earIndex = polyVertices.IndexOf(vert);
+                prev = (earIndex == 0) ? polyVertices[polyVertices.Count - 1] : polyVertices[earIndex - 1];
+                next = (earIndex == polyVertices.Count - 1) ? polyVertices[0] : polyVertices[earIndex + 1];
+
+                // Create and add Triangle to output
+                Vertex triV0 = new Vertex(), triV1 = new Vertex(), triV2 = new Vertex();
+                triV0.Position = prev;
+                triV1.Position = vert;
+                triV2.Position = next;
+                Triangle tri = new Triangle();
+                tri.V0 = triV0;
+                tri.V1 = triV1;
+                tri.V2 = triV2;
+                tris.Add(tri);
+
+                // Adjust neighboring Vertices
+                polyVertices.Remove(vert); // Can no longer affect neighbors, will affect indices
+                ears.Remove(vert);
+                int prevIndex = polyVertices.IndexOf(prev);
+                int nextIndex = polyVertices.IndexOf(next);
+
+                // Previous
+                vert = prev;
+                prev = (prevIndex == 0) ? polyVertices[polyVertices.Count - 1] : polyVertices[prevIndex - 1];
+                // next does not change
+
+                // If this vertex was reflex, check if it still is
+                if (reflexVertices.Contains(vert))
+                {
+                    Vector3 vertDirection = Vector3.Normalize(Vector3.Cross(vert - prev, next - vert));
+                    if (vertDirection == polyDirection) // Same normal, so no longer reflex
+                    {
+                        reflexVertices.Remove(vert);
+                    }
+                }
+                // If the vertex is now not reflex, check if it is an Ear. If it is not now, and was, remove it
+                if (!reflexVertices.Contains(vert))
+                {
+                    bool bIsEar = true;
+
+                    // Use Barycentric coordinates for determining if a point is within the Triangle defined
+                    // by the 3 points. Uses method from pages 2 and 3 of
+                    // https://ceng2.ktu.edu.tr/~cakir/files/grafikler/Texture_Mapping.pdf
+                    Vector3 v0 = prev - vert, v1 = next - vert;
+                    float d00 = Vector3.Dot(v0, v0);
+                    float d01 = Vector3.Dot(v0, v1);
+                    float d11 = Vector3.Dot(v1, v1);
+                    float denom = d00 * d11 - d01 * d01;
+                    foreach (Vector3 reflex in reflexVertices)
+                    {
+                        Vector3 v2 = reflex - vert;
+                        float d20 = Vector3.Dot(v2, v0);
+                        float d21 = Vector3.Dot(v2, v1);
+
+                        float bv = (d11 * d20 - d01 * d21) / denom;
+                        float bw = (d00 * d21 - d01 * d20) / denom;
+                        float bu = 1.0f - bv - bw;
+
+                        // If the point is inside the Triangle, it is not an Ear
+                        if (bv <= 1.0f && bv >= 0.0f
+                            && bw <= 1.0f && bw >= 0.0f
+                            && bu <= 1.0f && bu >= 0.0f
+                            && bv + bw + bu == 1.0f)
+                        {
+                            bIsEar = false;
+                            break;
+                        }
+                    }
+
+                    bool bWasEar = ears.Contains(vert);
+                    if (bWasEar && !bIsEar) ears.Remove(vert);
+                    else if (!bWasEar && bIsEar) ears.Add(vert);
+                    // If it was and still is, do nothing
+                }
+
+                // Next
+                prev = vert; // next is now next of original previous
+                vert = next; // Unchanged during Previous calculation
+                next = (nextIndex == polyVertices.Count - 1) ? polyVertices[0] : polyVertices[nextIndex + 1];
+
+                // If this vertex was reflex, check if it still is
+                if (reflexVertices.Contains(vert))
+                {
+                    Vector3 vertDirection = Vector3.Normalize(Vector3.Cross(vert - prev, next - vert));
+                    if (vertDirection == polyDirection) // Same normal, so no longer reflex
+                    {
+                        reflexVertices.Remove(vert);
+                    }
+                }
+                // If the vertex is now not reflex, check if it is an Ear. If it is not now, and was, remove it
+                if (!reflexVertices.Contains(vert))
+                {
+                    bool bIsEar = true;
+
+                    // Use Barycentric coordinates for determining if a point is within the Triangle defined
+                    // by the 3 points. Uses method from pages 2 and 3 of
+                    // https://ceng2.ktu.edu.tr/~cakir/files/grafikler/Texture_Mapping.pdf
+                    Vector3 v0 = prev - vert, v1 = next - vert;
+                    float d00 = Vector3.Dot(v0, v0);
+                    float d01 = Vector3.Dot(v0, v1);
+                    float d11 = Vector3.Dot(v1, v1);
+                    float denom = d00 * d11 - d01 * d01;
+                    foreach (Vector3 reflex in reflexVertices)
+                    {
+                        Vector3 v2 = reflex - vert;
+                        float d20 = Vector3.Dot(v2, v0);
+                        float d21 = Vector3.Dot(v2, v1);
+
+                        float bv = (d11 * d20 - d01 * d21) / denom;
+                        float bw = (d00 * d21 - d01 * d20) / denom;
+                        float bu = 1.0f - bv - bw;
+
+                        // If the point is inside the Triangle, it is not an Ear
+                        if (bv <= 1.0f && bv >= 0.0f
+                            && bw <= 1.0f && bw >= 0.0f
+                            && bu <= 1.0f && bu >= 0.0f
+                            && bv + bw + bu == 1.0f)
+                        {
+                            bIsEar = false;
+                            break;
+                        }
+                    }
+
+                    bool bWasEar = ears.Contains(vert);
+                    if (bWasEar && !bIsEar) ears.Remove(vert);
+                    else if (!bWasEar && bIsEar) ears.Add(vert);
+                    // If it was and still is, do nothing
+                }
+            }
+        }
+
+        return tris;
+    }
+
+    /***************************************** DEFUNCT CODE FROM ORIGINAL, FAILED APPROACH **************************************************/
 
     // Performs an implementation of the Sutherland-Hodgman Clip Algorithm in 3D space
     // using planes instead of lines. The "clipped" polygon is the Boolean Intersection, which
