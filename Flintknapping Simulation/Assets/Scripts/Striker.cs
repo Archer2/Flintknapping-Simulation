@@ -589,7 +589,7 @@ public class Striker : MonoBehaviour
         {
             Mesh cone = GenerateCone();
             cone.name = "Hertzian_Cone";
-            coneMeshFilter.mesh = cone;
+            //coneMeshFilter.mesh = cone;
 
             //SutherlandHodgmanAlgorithm/*CullOnly*/(coreMesh, cone);
             StrikeMesh(cone);
@@ -1000,9 +1000,9 @@ public class Striker : MonoBehaviour
             foreach (Triangle t in triangulation)
             {
                 Color c = new Color(UnityEngine.Random.Range(0f, 1f), UnityEngine.Random.Range(0f, 1f), UnityEngine.Random.Range(0f, 1f));
-                Debug.DrawLine(t.V0.Position, t.V1.Position, c, 10000);
-                Debug.DrawLine(t.V1.Position, t.V2.Position, c, 10000);
-                Debug.DrawLine(t.V2.Position, t.V0.Position, c, 10000);
+                //Debug.DrawLine(t.V0.Position, t.V1.Position, c, 10000);
+                //Debug.DrawLine(t.V1.Position, t.V2.Position, c, 10000);
+                //Debug.DrawLine(t.V2.Position, t.V0.Position, c, 10000);
             }
         
             // Replace pair.Key with the triangulation
@@ -1030,8 +1030,79 @@ public class Striker : MonoBehaviour
 
         // Step 3/4 - Merge and Update, form intersection Loops
 
+        // TEMPORARY HACKY METHOD, SINCE THE CORE GEOMETRY SEEMS TO BE THE SAME
+        //  - Ignore the actual sub-section divisions and just perform the difference
+        //    by finding all Clip Triangles within the Core, adding them (and reversing
+        //    their normals), and removing all Core Triangles that lie within the Cone
+        //  - Slow, and unoptimized, but hopefully satisfactory for the final grade
+        // Cut Core Triangles that lie within the Clip Mesh
+        for (int i = 0; i < core.Triangles.Count; i++)
+        {
+            Triangle t = core.Triangles[i];
+
+            // Is a point within the given Mesh
+            Func<Vector3, Mesh, bool> IsPointWithinMesh = (Vector3 meshSpaceVert, Mesh mesh) =>
+            {
+                int[] tris = mesh.triangles;
+                Vector3[] verts = mesh.vertices;
+                for (int i = 0; i < tris.Length; i += 3)
+                {
+                    Plane p = new Plane(verts[tris[i]], verts[tris[i + 1]], verts[tris[i + 2]]);
+                    float d = p.GetDistanceToPoint(meshSpaceVert);
+                    if (d > -0.01f)
+                        return false;
+                }
+                return true;
+            };
+
+            // Must convert from world to cone space. Cone is this object
+            if (IsPointWithinMesh(transform.InverseTransformPoint(t.V0.Position), clipMesh)
+                || IsPointWithinMesh(transform.InverseTransformPoint(t.V1.Position), clipMesh)
+                || IsPointWithinMesh(transform.InverseTransformPoint(t.V2.Position), clipMesh))
+            {
+                //Debug.DrawLine(t.V0.Position, t.V1.Position, Color.red, 10000);
+                //Debug.DrawLine(t.V1.Position, t.V2.Position, Color.red, 10000);
+                //Debug.DrawLine(t.V2.Position, t.V0.Position, Color.red, 10000);
+                core.Triangles.Remove(t);
+                i--;
+            }
+        }
+        // Add all Clip Triangles within the Core, with inverse normals
+        for (int i = 0; i < clip.Triangles.Count; i++)
+        {
+            Triangle t = clip.Triangles[i];
+            bool v0OnCore = false, v1OnCore = false, v2OnCore = false;
+            Vector3 v0 = coreModel.transform.InverseTransformPoint(t.V0.Position);
+            Vector3 v1 = coreModel.transform.InverseTransformPoint(t.V1.Position);
+            Vector3 v2 = coreModel.transform.InverseTransformPoint(t.V2.Position);
+
+
+            foreach (Vector3 vert in core.Extract(coreModel.transform).vertices)
+            {
+                if (vert == v0) v0OnCore = true;
+                if (vert == v1) v1OnCore = true;
+                if (vert == v2) v2OnCore = true;
+            }
+
+            // Convert to core space. coreModel.transform
+            if (v0OnCore && v1OnCore && v2OnCore)
+            {
+                //Debug.DrawLine(t.V0.Position, t.V1.Position, Color.red, 10000);
+                //Debug.DrawLine(t.V1.Position, t.V2.Position, Color.red, 10000);
+                //Debug.DrawLine(t.V2.Position, t.V0.Position, Color.red, 10000);
+                Triangle newT = new Triangle();
+                newT.V0 = t.V0;
+                newT.V1 = t.V2; // Reverse winding order
+                newT.V2 = t.V1;
+                newT.V0.Normal *= -1;
+                newT.V1.Normal *= -1;
+                newT.V2.Normal *= -1;
+                core.Triangles.Add(newT);
+            }
+        }
+
         // Replace meshes
-        coneMeshFilter.mesh = clip.Extract(transform);
+        //coneMeshFilter.mesh = clip.Extract(transform);
         coreModel.GetComponent<MeshFilter>().mesh = core.Extract(coreModel.transform);
     }
 
