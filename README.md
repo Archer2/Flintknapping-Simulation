@@ -20,13 +20,13 @@ To cut past the work of setting up an environment in which to simulate an intera
 3. Calculate subsurfaces of the geometries by separating them at edges where they begin or end an overlap. These subsurfaces are then combined into the geometry for any boolean type. At this time, I take the Difference subsections to output the model of the Core after the flake has been removed, since this is the simplest of the two outputs to calculate.
 
 ## Demo
-Provided is a demonstration build of the simulation in its current state. Work is intended to continue on this project, focusing immediately in the areas of user interaction (allowing the user to set up the strike the way they want it), followed by generating the flake in conjunction with the modified Core. As it stands now, there is only a static input for the strike, and that can only be triggered once. The static input is configured to cut a slice out of the right of the Core, which is the large, conical object that solely inhabits the simulation when launched.
+Provided is a demonstration build of the simulation in its current state. Work is intended to continue on this project, focusing immediately in the areas of user interaction (allowing the user to set up the strike the way they want it), followed by generating the flake in conjunction with the modified Core. As it stands now, there is only a static input for the strike, and that can only be triggered once. The static input is configured to cut a slice out of the bottom of the Core, which is the large, conical object that solely inhabits the simulation when launched.
 
-The Demo can be found [here](link TBD).
+The Demo can be found [here](https://people.rit.edu/arb7109/csci716/project/build/).
 
 ### Controls
 1. The camera can be controlled with standard WASD keys, rotated by holding down the right mouse button and dragging, and moved up and down with the Spacebar and Left Shift keys, respectively.
-2. The Strike can be triggered by pressing the 'I' key. A good indication of its success is that part of the top of the Core will have hard edges and be colored differently, instead of being smoothly shaded. The right will also have changed to have a conical dent/cutout, though with Unity's default shading that is difficult to notice. While a wireframe shading would be more ideal, I was not able to get one working to apply to this project.
+2. The Strike can be triggered by pressing the 'I' key. A good indication of its success is that part of the right of the Core will have hard edges differently, instead of being smoothly shaded. The bottom will also have changed to have a conical dent/cutout, though with Unity's default shading that is difficult to notice. While a wireframe shading would be more ideal, I was not able to get one working to apply to this project.
 
 ## Final Presentation
 [A presentation on the results of this project may be found here.](https://www.youtube.com/watch?v=Izvm0YxuIx0)
